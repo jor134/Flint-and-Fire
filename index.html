@@ -1504,10 +1504,11 @@ function buildPools(){
 function mkBuilding(t,colHex,era){
   era=era|0;
   const g=new THREE.Group(), d=B[t], r=d.r, M=EMAT[era];
-  const wall=new THREE.MeshToonMaterial({color:M.wall});
-  const roofM=new THREE.MeshToonMaterial({color:colHex});   // owner colour always lives on the roof
-  const trim=new THREE.MeshToonMaterial({color:M.trim});
-  const dark=new THREE.MeshToonMaterial({color:M.dark});
+  const mat=c=>new THREE.MeshToonMaterial({color:c,transparent:true,opacity:1});
+  const wall=mat(M.wall);
+  const roofM=mat(colHex);   // owner colour always lives on the roof
+  const trim=mat(M.trim);
+  const dark=mat(M.dark);
   const add=(geo,mat,x,y,z,ry)=>{const m=new THREE.Mesh(geo,mat);
     m.position.set(x,y,z); if(ry)m.rotation.y=ry; g.add(m); return m;};
 
@@ -1557,9 +1558,9 @@ function mkBuilding(t,colHex,era){
     break;
   case 'farm':{
     const soil=[0x8A6B44,0xA98A44,0x8E7A4E,0x9A8A52][era];
-    add(new THREE.BoxGeometry(r*2,0.12,r*2),new THREE.MeshToonMaterial({color:soil}),0,0.06,0);
+    add(new THREE.BoxGeometry(r*2,0.12,r*2),mat(soil),0,0.06,0);
     for(let i=-1;i<=1;i++)
-      add(new THREE.BoxGeometry(r*1.9,0.16,0.16),new THREE.MeshToonMaterial({color:0x6E8B3A}),0,0.16,i*0.9);
+      add(new THREE.BoxGeometry(r*1.9,0.16,0.16),mat(0x6E8B3A),0,0.16,i*0.9);
     if(era===0)for(const sd of [[1,1],[-1,-1]])
       add(new THREE.CylinderGeometry(0.04,0.06,0.55,4),trim,sd[0]*r*0.9,0.28,sd[1]*r*0.9);
     if(era>=1)for(let i=0;i<4;i++){const ang=i/4*TAU;
@@ -1618,11 +1619,12 @@ function mkBuilding(t,colHex,era){
 }
 function scaffold(t,colHex,era){
   const g=new THREE.Group(), r=B[t].r, M=EMAT[era|0];
-  const m=new THREE.MeshToonMaterial({color:M.pole});
+  const m=new THREE.MeshToonMaterial({color:M.pole,transparent:true,opacity:1});
   for(const sd of [[1,1],[1,-1],[-1,1],[-1,-1]]){
     const p=new THREE.Mesh(new THREE.BoxGeometry(0.14,1.5,0.14),m);
     p.position.set(sd[0]*r*0.8,0.75,sd[1]*r*0.8);g.add(p);}
-  const base=new THREE.Mesh(new THREE.BoxGeometry(r*1.7,0.2,r*1.7),new THREE.MeshToonMaterial({color:colHex}));
+  const base=new THREE.Mesh(new THREE.BoxGeometry(r*1.7,0.2,r*1.7),
+    new THREE.MeshToonMaterial({color:colHex,transparent:true,opacity:1}));
   base.position.y=0.1;g.add(base);
   const bar=new THREE.Mesh(new THREE.BoxGeometry(r*1.7,0.1,0.1),m); bar.position.set(0,1.5,r*0.8); g.add(bar);
   return g;
@@ -1633,6 +1635,25 @@ function dropGroup(o){
   world.remove(o);
   o.traverse(c=>{if(c.geometry)c.geometry.dispose();
     if(c.material)(Array.isArray(c.material)?c.material:[c.material]).forEach(m=>m.dispose());});
+}
+const FADE_OP=0.32;
+function fadeBuilding(o,e){
+  if(e.t==='farm'){return;} // flat, never hides anything
+  const rr=contact(e)+1.7, r2=rr*rr;
+  let hide=false;
+  for(let i=0;i<MYU.length;i++){
+    const u=MYU[i];
+    if((u.rx-e.x)**2+(u.rz-e.z)**2<r2){hide=true;break;}
+  }
+  const tgt=hide?FADE_OP:1;
+  let op=o.userData.op===undefined?1:o.userData.op;
+  op=lerp(op,tgt,0.22);
+  if(Math.abs(op-tgt)<0.012)op=tgt;
+  if(op===o.userData.op)return;
+  o.userData.op=op;
+  const dw=op>0.97;
+  o.traverse(c=>{if(c.material&&c.material.opacity!==undefined){
+    c.material.opacity=op; c.material.depthWrite=dw;}});
 }
 function syncBuildings(){
   const live=new Set(); let rebuilds=0;
@@ -1651,6 +1672,7 @@ function syncBuildings(){
     }
     o.position.set(e.x,groundY(e.x,e.z),e.z);
     o.rotation.y=ang4(e);
+    fadeBuilding(o,e);
     if(!wantDone)o.scale.setScalar(0.55+0.45*clamp(e.done,0,1));
     else o.scale.setScalar(1);
   }
@@ -1670,8 +1692,10 @@ function pushI(name,x,y,z,ang,sc,col){
   m.count++;
 }
 let resDirty=true;
+const MYU=[];
 function drawWorld(alpha){
   for(const k in IM)IM[k].count=0;
+  MYU.length=0;
   const sel=SELN;
   for(const e of S.ents){
     if(e.dead)continue;
@@ -1679,6 +1703,7 @@ function drawWorld(alpha){
     e.rx=lerp(e.rx,e.x,0.32); e.rz=lerp(e.rz,e.z,0.32);
     const y=groundY(e.rx,e.rz);
     if(e.k==='u'){
+      if(e.o===S.me)MYU.push(e);
       const c=PCOL[e.o], parts=unitPool(e.t,eraOf(e.o));
       for(let i=0;i<parts.length;i++)
         pushI(parts[i],e.rx,y,e.rz,e.ang,1,IM[parts[i]].userData.tint?c:undefined);
@@ -1846,7 +1871,8 @@ canvas.addEventListener('pointermove',e=>{
     let da=ang-P.ang; if(da>Math.PI)da-=TAU; if(da<-Math.PI)da+=TAU;
     CAMS.yaw-=da;
     const k=CAMS.dist*0.0022;
-    const dx=(mx-P.lx)*k, dy=(my-P.ly)*k;
+    // horizontal is inverted on purpose: dragging left pulls the map right
+    const dx=-(mx-P.lx)*k, dy=(my-P.ly)*k;
     CAMS.tx-= Math.cos(CAMS.yaw)*dx - Math.sin(CAMS.yaw)*dy;
     CAMS.tz+= Math.sin(CAMS.yaw)*dx + Math.cos(CAMS.yaw)*dy;
     P.pinch=d;P.ang=ang;P.lx=mx;P.ly=my;
