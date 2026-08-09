@@ -1384,23 +1384,111 @@ function pool(name,geo,col,cap){
   m.instanceColor.setUsage(THREE.DynamicDrawUsage);
   m.count=0; m.frustumCulled=false; world.add(m); IM[name]=m; return m;
 }
+/* ---- four visual eras stretched across the eight ages ---------------------
+   Stone/Copper/Iron -> Primitive · Classical/Dark -> Classical
+   Feudal/Castle -> Feudal · Imperial -> Imperial
+   At Quest 3 tabletop scale a unit is ~4mm tall, so era identity lives in
+   silhouette and palette, not in detail nobody will ever see.            ---- */
+const ERA=[0,0,0,1,1,2,2,3];
+const ERANAME=['Primitive','Classical','Feudal','Imperial'];
+const EMAT=[
+ {wall:0xB49A72,roof:0x8A6B44,trim:0xE8DCC4,dark:0x5E4A32,pole:0x7A6244}, // hide, bone, thatch
+ {wall:0xD8CDB4,roof:0xB2593C,trim:0xC4B08A,dark:0x7A6448,pole:0x8A7048}, // plaster, terracotta
+ {wall:0x9A968C,roof:0x4A5058,trim:0x6B563A,dark:0x3E3A34,pole:0x54463A}, // cut stone, slate
+ {wall:0xCFC6B2,roof:0x3F4756,trim:0xD8A24A,dark:0x4A4438,pole:0x6B5A3E}, // dressed stone, gold
+];
+const eraOf=o=>{const p=S.players[o];return ERA[p?p.age:0];};
+const TH=THREE;
+/* rotate-then-translate helper so every part can be baked into the instance geometry */
+function ug(g,x,y,z,rx,rz){ if(rx)g.rotateX(rx); if(rz)g.rotateZ(rz); g.translate(x,y||0,z||0); return g; }
+
+/* each entry: [geometry, colour, tintedWithOwnerColour] */
+const UGEO={
+ vill:[
+  e=>[[ug(new TH.ConeGeometry(0.32,0.70,5),0,0.35),0,1],                       // fur skirt
+      [ug(new TH.IcosahedronGeometry(0.19,0),0,0.82),0x6B563A,0],              // wild hair
+      [ug(new TH.CylinderGeometry(0.05,0.10,0.50,4),0.26,0.50,0.05,0,0.7),0x8A7048,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.18,0.26,0.76,6),0,0.38),0,1],
+      [ug(new TH.SphereGeometry(0.16,6,5),0,0.85),0xE8C9A0,0],
+      [ug(new TH.BoxGeometry(0.22,0.26,0.14),0.23,0.50),0xB08A54,0]],          // satchel
+  e=>[[ug(new TH.CylinderGeometry(0.19,0.29,0.78,6),0,0.39),0,1],
+      [ug(new TH.ConeGeometry(0.20,0.30,6),0,0.92),0x8A7A62,0],                // hood
+      [ug(new TH.CylinderGeometry(0.04,0.04,0.70,4),0.24,0.55,0,0,0.25),0x6B563A,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.20,0.30,0.80,6),0,0.40),0,1],
+      [ug(new TH.SphereGeometry(0.16,6,5),0,0.90),0xE8C9A0,0],
+      [ug(new TH.BoxGeometry(0.30,0.44,0.10),0,0.55,0.16),0,1]]],              // tabard
+ inf:[
+  e=>[[ug(new TH.ConeGeometry(0.32,0.80,5),0,0.40),0,1],
+      [ug(new TH.IcosahedronGeometry(0.21,0),0,0.92),0x5E4A32,0],
+      [ug(new TH.CylinderGeometry(0.08,0.15,0.68,5),0.30,0.62,0,0,0.55),0x7A6244,0]], // club
+  e=>[[ug(new TH.CylinderGeometry(0.25,0.29,0.84,6),0,0.42),0,1],
+      [ug(new TH.ConeGeometry(0.24,0.34,6),0,1.02),0xC0A860,0],                // crested helm
+      [ug(new TH.CylinderGeometry(0.28,0.28,0.06,10),0.30,0.60,0,Math.PI/2),0,1]], // round shield
+  e=>[[ug(new TH.BoxGeometry(0.42,0.82,0.30),0,0.41),0,1],
+      [ug(new TH.ConeGeometry(0.22,0.36,5),0,1.00),0x9A968C,0],
+      [ug(new TH.BoxGeometry(0.30,0.46,0.06),0.30,0.60),0,1]],                 // kite shield
+  e=>[[ug(new TH.CylinderGeometry(0.28,0.32,0.90,7),0,0.45),0,1],
+      [ug(new TH.ConeGeometry(0.24,0.40,7),0,1.10),0xD8A24A,0],
+      [ug(new TH.BoxGeometry(0.08,0.95,0.16),0.30,0.75),0xE0DACB,0]]],         // greatsword
+ rng:[
+  e=>[[ug(new TH.CylinderGeometry(0.16,0.24,0.74,5),0,0.37),0,1],
+      [ug(new TH.IcosahedronGeometry(0.17,0),0,0.85),0x5E4A32,0],
+      [ug(new TH.TorusGeometry(0.16,0.025,4,8),0.26,0.62,0,Math.PI/2),0x8A7048,0]], // sling
+  e=>[[ug(new TH.CylinderGeometry(0.16,0.24,0.76,5),0,0.38),0,1],
+      [ug(new TH.SphereGeometry(0.16,6,5),0,0.85),0xE8C9A0,0],
+      [ug(new TH.TorusGeometry(0.30,0.03,4,8,Math.PI),0.24,0.60,0,0,Math.PI/2),0x7A5A34,0]], // bow
+  e=>[[ug(new TH.CylinderGeometry(0.17,0.26,0.78,5),0,0.39),0,1],
+      [ug(new TH.ConeGeometry(0.19,0.28,5),0,0.90),0x8A7A62,0],
+      [ug(new TH.BoxGeometry(0.56,0.05,0.06),0.10,0.62,0.18),0x6B563A,0]],     // crossbow
+  e=>[[ug(new TH.CylinderGeometry(0.18,0.27,0.80,6),0,0.40),0,1],
+      [ug(new TH.ConeGeometry(0.20,0.30,6),0,0.92),0xD8A24A,0],
+      [ug(new TH.BoxGeometry(0.34,0.62,0.07),-0.28,0.60),0,1]]],               // pavise
+ cav:[
+  e=>[[ug(new TH.BoxGeometry(1.00,0.50,0.46),0,0.62),0x6B563A,0],              // shaggy beast
+      [ug(new TH.CylinderGeometry(0.20,0.24,0.60,5),-0.05,1.08),0,1],
+      [ug(new TH.TorusGeometry(0.30,0.05,4,8,2.2),0.55,0.72,0,Math.PI/2,0.6),0xE8DCC4,0]], // tusk
+  e=>[[ug(new TH.BoxGeometry(1.00,0.42,0.40),0,0.62),0x8A6B44,0],
+      [ug(new TH.CylinderGeometry(0.19,0.23,0.58,5),-0.05,1.05),0,1],
+      [ug(new TH.ConeGeometry(0.16,0.34,5),-0.05,1.42),0xC0A860,0]],
+  e=>[[ug(new TH.BoxGeometry(1.05,0.48,0.44),0,0.63),0,1],                     // barding
+      [ug(new TH.CylinderGeometry(0.20,0.24,0.60,6),-0.05,1.08),0x9A968C,0],
+      [ug(new TH.BoxGeometry(0.06,0.06,1.10),0.20,0.95,0.30),0x6B563A,0]],     // lance
+  e=>[[ug(new TH.BoxGeometry(1.10,0.50,0.46),0,0.65),0,1],
+      [ug(new TH.CylinderGeometry(0.21,0.25,0.62,6),-0.05,1.10),0xCFC6B2,0],
+      [ug(new TH.BoxGeometry(0.06,0.06,1.25),0.20,1.00,0.34),0xD8A24A,0]]],
+ sie:[
+  e=>[[ug(new TH.BoxGeometry(1.25,0.50,0.95),0,0.40),0x6E5636,0],
+      [ug(new TH.CylinderGeometry(0.10,0.10,1.40,5),0,0.85,0.15,Math.PI/2),0,1],
+      [ug(new TH.CylinderGeometry(0.09,0.09,0.90,5),0,0.75,-0.30,0,Math.PI/2),0x4A3B28,0]],
+  e=>[[ug(new TH.BoxGeometry(1.25,0.50,0.95),0,0.40),0x6E5636,0],
+      [ug(new TH.CylinderGeometry(0.10,0.10,1.40,5),0,0.85,0.15,Math.PI/2),0,1],
+      [ug(new TH.CylinderGeometry(0.09,0.09,0.90,5),0,0.75,-0.30,0,Math.PI/2),0x4A3B28,0]],
+  e=>[[ug(new TH.BoxGeometry(1.30,0.50,1.00),0,0.40),0x5E4A32,0],
+      [ug(new TH.BoxGeometry(0.12,0.12,1.30),0,0.85,-0.10,-0.7),0,1],          // throwing arm
+      [ug(new TH.SphereGeometry(0.22,6,5),0,1.25,-0.45),0x9A968C,0]],
+  e=>[[ug(new TH.BoxGeometry(1.35,0.50,1.05),0,0.40),0x4A4438,0],
+      [ug(new TH.CylinderGeometry(0.10,0.10,1.90,5),0,1.00,0,0.9),0x5E4A32,0], // frame
+      [ug(new TH.BoxGeometry(0.10,0.10,2.00),0,1.30,-0.10,-1.1),0,1]]],        // beam
+};
+const UPOOL={};
+/* pools are built the first time an era actually appears on the field, so a
+   Stone Age skirmish never allocates the Imperial geometry */
+function unitPool(t,era){
+  const key=t+era;
+  if(UPOOL[key])return UPOOL[key];
+  const parts=UGEO[t][era](era), names=[];
+  parts.forEach((p,i)=>{
+    const nm=key+'_'+i;
+    const m=pool(nm,p[0],p[1]||0xffffff,170);
+    m.userData.tint=!!p[2];
+    names.push(nm);
+  });
+  return UPOOL[key]=names;
+}
 function buildPools(){
   for(const k in IM){world.remove(IM[k]);IM[k].geometry.dispose();delete IM[k];}
-  const CAP=260;
-  pool('vill_b',new THREE.CylinderGeometry(0.2,0.28,0.7,5),0xffffff,CAP).geometry.translate(0,0.35,0);
-  pool('vill_h',new THREE.SphereGeometry(0.17,6,5),0xE8C9A0,CAP).geometry.translate(0,0.82,0);
-  pool('inf_b',new THREE.CylinderGeometry(0.26,0.3,0.82,6),0xffffff,CAP).geometry.translate(0,0.41,0);
-  pool('inf_h',new THREE.ConeGeometry(0.25,0.34,6),0xB8B2A4,CAP).geometry.translate(0,1.0,0);
-  pool('rng_b',new THREE.CylinderGeometry(0.18,0.26,0.78,5),0xffffff,CAP).geometry.translate(0,0.39,0);
-  pool('rng_h',new THREE.BoxGeometry(0.08,0.6,0.28),0x7A5A34,CAP).geometry.translate(0,0.78,-0.2);
-  const cb=new THREE.BoxGeometry(1.0,0.42,0.42); cb.translate(0,0.62,0);
-  pool('cav_b',cb,0x6B4A32,CAP);
-  pool('cav_h',new THREE.CylinderGeometry(0.2,0.24,0.6,5),0xffffff,CAP).geometry.translate(-0.05,1.05,0);
-  const sb=new THREE.BoxGeometry(1.3,0.55,1.0); sb.translate(0,0.4,0);
-  pool('sie_b',sb,0x6E5636,CAP/2);
-  const sh=new THREE.CylinderGeometry(0.1,0.1,1.5,5); sh.rotateX(Math.PI/2); sh.translate(0,0.85,0.15);
-  pool('sie_h',sh,0xffffff,CAP/2);
-  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,CAP);
+  for(const k in UPOOL)delete UPOOL[k];
+  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,260);
   pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,140);
   // resources
   pool('tr_t',new THREE.CylinderGeometry(0.14,0.2,1.1,5),0x5A4326,2400).geometry.translate(0,0.55,0);
@@ -1412,90 +1500,161 @@ function buildPools(){
   pool('boom',new THREE.IcosahedronGeometry(0.5,0),0xE0552B,40);
 }
 
-/* ---- buildings as small groups ---- */
-function mkBuilding(t,colHex){
-  const g=new THREE.Group(), d=B[t], r=d.r;
-  const wall=new THREE.MeshToonMaterial({color:0xC9B48C});
-  const roof=new THREE.MeshToonMaterial({color:colHex});
-  const dark=new THREE.MeshToonMaterial({color:0x6B563A});
-  const add=(geo,mat,x,y,z,ry)=>{const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);if(ry)m.rotation.y=ry;g.add(m);return m;};
+/* ---- buildings as small groups, re-skinned per era ---- */
+function mkBuilding(t,colHex,era){
+  era=era|0;
+  const g=new THREE.Group(), d=B[t], r=d.r, M=EMAT[era];
+  const wall=new THREE.MeshToonMaterial({color:M.wall});
+  const roofM=new THREE.MeshToonMaterial({color:colHex});   // owner colour always lives on the roof
+  const trim=new THREE.MeshToonMaterial({color:M.trim});
+  const dark=new THREE.MeshToonMaterial({color:M.dark});
+  const add=(geo,mat,x,y,z,ry)=>{const m=new THREE.Mesh(geo,mat);
+    m.position.set(x,y,z); if(ry)m.rotation.y=ry; g.add(m); return m;};
+
+  /* era vocabulary ------------------------------------------------------- */
+  const body=(w,h,dp)=> era===0
+    ? add(new THREE.CylinderGeometry(w*0.50,w*0.60,h,6),wall,0,h/2,0,0.4)
+    : add(new THREE.BoxGeometry(w,h,dp),wall,0,h/2,0);
+  const roof=(rr,h,y)=>{
+    const ge = era===0 ? new THREE.ConeGeometry(rr*1.06,h*1.35,5)
+             : era===1 ? new THREE.ConeGeometry(rr,h*0.72,4)
+             :           new THREE.ConeGeometry(rr,h*1.3,4);
+    add(ge,roofM,0,y,0,era===0?0.4:Math.PI/4);
+    if(era===3)add(new THREE.SphereGeometry(rr*0.15,6,5),trim,0,y+h*0.75,0);
+  };
+  const tusks=(y,z,sc)=>{ for(const sd of [-1,1]){
+    const m=add(new THREE.TorusGeometry(0.5*sc,0.085*sc,4,8,2.0),trim,sd*0.55*sc,y,z);
+    m.rotation.set(Math.PI/2,0,sd*1.1); } };
+  const bones=(x,n)=>{ for(let i=0;i<n;i++){
+    const m=add(new THREE.CylinderGeometry(0.045,0.07,0.85,4),trim,x,0.42,(i-(n-1)/2)*0.5);
+    m.rotation.z=0.22; } };
+  const crenels=(rr,y)=>{ for(let i=0;i<8;i++){const ang=i/8*TAU;
+    add(new THREE.BoxGeometry(0.24,0.3,0.24),wall,Math.cos(ang)*rr,y,Math.sin(ang)*rr);} };
+  const banner=(x,z,base,h)=>{ add(new THREE.CylinderGeometry(0.05,0.05,h,4),dark,x,base+h/2,z);
+    add(new THREE.BoxGeometry(0.035,h*0.4,0.32),roofM,x,base+h*0.76,z+0.16); };
+  const columns=(rr,h)=>{ for(const sd of [[1,1],[1,-1],[-1,1],[-1,-1]])
+    add(new THREE.CylinderGeometry(0.13,0.16,h,6),trim,sd[0]*rr,h/2,sd[1]*rr); };
+  const timberX=(w,h,z)=>{ for(const sd of [-1,1]){
+    const m=add(new THREE.BoxGeometry(0.09,h*1.3,0.09),dark,0,h/2,z); m.rotation.z=sd*0.72; } };
+
   switch(t){
   case 'tc':
-    add(new THREE.BoxGeometry(r*1.7,1.9,r*1.7),wall,0,0.95,0);
-    add(new THREE.ConeGeometry(r*1.5,1.5,4),roof,0,2.6,0,Math.PI/4);
-    add(new THREE.CylinderGeometry(0.16,0.16,3.4,5),dark,r*0.85,1.7,r*0.85);
-    add(new THREE.ConeGeometry(0.5,0.7,4),roof,r*0.85,3.6,r*0.85);
+    body(r*1.7,1.9,r*1.7); roof(r*1.5,1.6,2.6);
+    if(era===0){ tusks(0.95,r*1.05,1.15); bones(-r*1.0,3); }
+    if(era===1){ columns(r*0.95,2.0); }
+    if(era>=2){ add(new THREE.CylinderGeometry(0.16,0.16,3.4,5),dark,r*0.85,1.7,r*0.85);
+                add(new THREE.ConeGeometry(0.5,0.7,4),roofM,r*0.85,3.6,r*0.85); }
+    if(era===3){ crenels(r*1.05,2.2); banner(-r*0.9,-r*0.9,1.9,1.9); }
     break;
   case 'house':
-    add(new THREE.BoxGeometry(1.7,1.0,1.7),wall,0,0.5,0);
-    add(new THREE.ConeGeometry(1.5,1.2,4),roof,0,1.5,0,Math.PI/4); break;
+    body(1.7,1.0,1.7); roof(1.5,1.2,1.45);
+    if(era===0){ add(new THREE.BoxGeometry(0.46,0.6,0.06),dark,0,0.3,0.85);   // hide door flap
+                 add(new THREE.CylinderGeometry(0.04,0.06,0.7,4),trim,0.7,0.35,0.55).rotation.z=0.3; }
+    if(era===1) add(new THREE.BoxGeometry(1.85,0.1,1.85),trim,0,1.02,0);
+    if(era===2) timberX(1.7,1.0,0.87);
+    if(era===3){ add(new THREE.BoxGeometry(0.3,0.9,0.3),wall,0.55,1.5,0.35);
+                 add(new THREE.BoxGeometry(0.38,0.1,0.38),trim,0.55,1.95,0.35); }
+    break;
   case 'farm':{
-    const p=add(new THREE.BoxGeometry(r*2,0.12,r*2),new THREE.MeshToonMaterial({color:0xA98A44}),0,0.06,0);
-    for(let i=-1;i<=1;i++)add(new THREE.BoxGeometry(r*1.9,0.16,0.16),new THREE.MeshToonMaterial({color:0x8B6E30}),0,0.16,i*0.9);
+    const soil=[0x8A6B44,0xA98A44,0x8E7A4E,0x9A8A52][era];
+    add(new THREE.BoxGeometry(r*2,0.12,r*2),new THREE.MeshToonMaterial({color:soil}),0,0.06,0);
+    for(let i=-1;i<=1;i++)
+      add(new THREE.BoxGeometry(r*1.9,0.16,0.16),new THREE.MeshToonMaterial({color:0x6E8B3A}),0,0.16,i*0.9);
+    if(era===0)for(const sd of [[1,1],[-1,-1]])
+      add(new THREE.CylinderGeometry(0.04,0.06,0.55,4),trim,sd[0]*r*0.9,0.28,sd[1]*r*0.9);
+    if(era>=1)for(let i=0;i<4;i++){const ang=i/4*TAU;
+      add(new THREE.CylinderGeometry(0.05,0.05,0.4,4),dark,Math.cos(ang)*r*0.95,0.2,Math.sin(ang)*r*0.95);}
+    if(era>=2)for(const sd of [-1,1])
+      add(new THREE.BoxGeometry(r*2,0.18,0.12),trim,0,0.09,sd*r*0.98);
     break;}
   case 'store':
-    add(new THREE.BoxGeometry(2.0,1.1,2.0),wall,0,0.55,0);
-    add(new THREE.BoxGeometry(2.3,0.24,2.3),roof,0,1.2,0);
-    add(new THREE.BoxGeometry(0.7,0.7,0.7),dark,0.9,0.35,0.9); break;
+    body(2.0,1.1,2.0);
+    if(era===0){ roof(1.35,1.1,1.15); bones(0.95,2); }
+    else add(new THREE.BoxGeometry(2.3,0.24,2.3),roofM,0,1.2,0);
+    add(new THREE.BoxGeometry(0.7,0.7,0.7),dark,0.9,0.35,0.9,0.4);
+    if(era>=2)add(new THREE.BoxGeometry(0.6,0.6,0.6),trim,-0.85,0.3,0.85,0.7);
+    break;
   case 'barracks': case 'range': case 'stable': case 'siegew':
-    add(new THREE.BoxGeometry(r*1.8,1.4,r*1.5),wall,0,0.7,0);
-    add(new THREE.BoxGeometry(r*1.95,0.3,r*1.7),roof,0,1.55,0);
+    body(r*1.8,1.4,r*1.5);
+    if(era===0) roof(r*1.15,1.35,1.45);
+    else { add(new THREE.BoxGeometry(r*1.95,0.3,r*1.7),roofM,0,1.55,0);
+           if(era>=2)add(new THREE.BoxGeometry(r*2.05,0.12,r*1.8),trim,0,1.72,0); }
     add(new THREE.BoxGeometry(0.5,1.0,0.5),dark,-r*0.7,0.5,r*0.75);
-    if(t==='range')add(new THREE.BoxGeometry(0.14,1.6,0.14),dark,r*0.7,0.8,-r*0.6);
-    if(t==='stable')add(new THREE.BoxGeometry(r*1.6,0.14,0.14),dark,0,1.0,r*0.8);
-    if(t==='siegew')add(new THREE.CylinderGeometry(0.7,0.7,0.3,8),dark,r*0.6,0.3,r*0.5).rotation.z=Math.PI/2;
+    if(t==='range')  add(new THREE.BoxGeometry(0.14,1.6,0.14),era?dark:trim,r*0.7,0.8,-r*0.6);
+    if(t==='stable') add(new THREE.BoxGeometry(r*1.6,0.14,0.14),dark,0,1.0,r*0.8);
+    if(t==='siegew') add(new THREE.CylinderGeometry(0.7,0.7,0.3,8),dark,r*0.6,0.3,r*0.5).rotation.z=Math.PI/2;
+    if(t==='barracks'&&era===0)tusks(0.7,r*0.85,0.8);
+    if(era===1&&t!=='siegew')columns(r*0.85,1.5);
+    if(era===2)timberX(r*1.8,1.4,r*0.78);
+    if(era===3)banner(r*0.85,-r*0.7,1.5,1.5);
     break;
   case 'tower':
-    add(new THREE.CylinderGeometry(0.75,0.95,3.6,7),wall,0,1.8,0);
-    add(new THREE.CylinderGeometry(1.05,0.85,0.5,7),roof,0,3.8,0);
-    add(new THREE.ConeGeometry(1.0,0.9,7),roof,0,4.4,0); break;
+    add(new THREE.CylinderGeometry(0.75,0.95,3.6,era===0?6:7),wall,0,1.8,0);
+    if(era===0){ add(new THREE.ConeGeometry(1.0,1.3,5),roofM,0,4.2,0,0.4); tusks(3.4,0.8,0.7); }
+    else { add(new THREE.CylinderGeometry(1.05,0.85,0.5,7),roofM,0,3.8,0);
+           if(era===3)crenels(0.95,4.05); else add(new THREE.ConeGeometry(1.0,0.9,7),roofM,0,4.45,0); }
+    if(era>=2)add(new THREE.BoxGeometry(0.3,0.9,0.3),dark,0,1.4,0.95);
+    break;
   case 'fort':
     add(new THREE.BoxGeometry(r*1.9,2.6,r*1.9),wall,0,1.3,0);
-    add(new THREE.BoxGeometry(r*2.1,0.4,r*2.1),roof,0,2.7,0);
-    for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
-      add(new THREE.CylinderGeometry(0.42,0.5,3.6,6),wall,s[0]*r*0.9,1.8,s[1]*r*0.9);
-      add(new THREE.ConeGeometry(0.6,0.8,6),roof,s[0]*r*0.9,3.9,s[1]*r*0.9);}
+    add(new THREE.BoxGeometry(r*2.1,0.4,r*2.1),roofM,0,2.7,0);
+    for(const sd of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+      add(new THREE.CylinderGeometry(0.42,0.5,3.6,6),wall,sd[0]*r*0.9,1.8,sd[1]*r*0.9);
+      add(new THREE.ConeGeometry(0.6,0.8,6),roofM,sd[0]*r*0.9,3.9,sd[1]*r*0.9);}
+    if(era===3){ crenels(r*1.0,3.05); banner(0,-r*1.05,2.9,2.2); }
+    else add(new THREE.BoxGeometry(r*1.4,0.9,0.2),dark,0,1.0,r*0.98);
     break;
   case 'wonder':
     add(new THREE.CylinderGeometry(r*1.3,r*1.5,0.6,8),wall,0,0.3,0);
     add(new THREE.CylinderGeometry(0.55,0.75,5.5,7),wall,0,3.0,0);
-    add(new THREE.SphereGeometry(1.05,8,6),roof,0,6.2,0);
-    for(let i=0;i<5;i++){const a=i/5*TAU;
-      add(new THREE.CylinderGeometry(0.22,0.26,2.4,5),wall,Math.cos(a)*r*1.1,1.2,Math.sin(a)*r*1.1);}
+    add(new THREE.SphereGeometry(1.05,8,6),roofM,0,6.2,0);
+    add(new THREE.TorusGeometry(1.35,0.1,4,10),trim,0,6.2,0).rotation.x=Math.PI/2;
+    for(let i=0;i<5;i++){const ang=i/5*TAU;
+      add(new THREE.CylinderGeometry(0.22,0.26,2.4,5),trim,Math.cos(ang)*r*1.1,1.2,Math.sin(ang)*r*1.1);}
     break;
-  default: add(new THREE.BoxGeometry(r*1.6,1.2,r*1.6),wall,0,0.6,0);
+  default: body(r*1.6,1.2,r*1.6);
   }
   return g;
 }
-function scaffold(t,colHex){
-  const g=new THREE.Group(), r=B[t].r;
-  const m=new THREE.MeshToonMaterial({color:0x8A7048});
-  for(const s of [[1,1],[1,-1],[-1,1],[-1,-1]]){
+function scaffold(t,colHex,era){
+  const g=new THREE.Group(), r=B[t].r, M=EMAT[era|0];
+  const m=new THREE.MeshToonMaterial({color:M.pole});
+  for(const sd of [[1,1],[1,-1],[-1,1],[-1,-1]]){
     const p=new THREE.Mesh(new THREE.BoxGeometry(0.14,1.5,0.14),m);
-    p.position.set(s[0]*r*0.8,0.75,s[1]*r*0.8);g.add(p);}
+    p.position.set(sd[0]*r*0.8,0.75,sd[1]*r*0.8);g.add(p);}
   const base=new THREE.Mesh(new THREE.BoxGeometry(r*1.7,0.2,r*1.7),new THREE.MeshToonMaterial({color:colHex}));
   base.position.y=0.1;g.add(base);
   const bar=new THREE.Mesh(new THREE.BoxGeometry(r*1.7,0.1,0.1),m); bar.position.set(0,1.5,r*0.8); g.add(bar);
   return g;
 }
+/* an age-up re-skins everything you own at once; without this the whole base
+   would rebuild in a single frame and drop one right when it matters */
+function dropGroup(o){
+  world.remove(o);
+  o.traverse(c=>{if(c.geometry)c.geometry.dispose();
+    if(c.material)(Array.isArray(c.material)?c.material:[c.material]).forEach(m=>m.dispose());});
+}
 function syncBuildings(){
-  const live=new Set();
+  const live=new Set(); let rebuilds=0;
   for(const e of S.ents){
     if(e.dead||e.k!=='b')continue;
     live.add(e.id);
     let o=BMESH.get(e.id);
-    const wantDone=e.done>=1?1:0;
-    if(!o||o.userData.done!==wantDone){
-      if(o)world.remove(o);
-      o=wantDone?mkBuilding(e.t,PCOL[e.o]):scaffold(e.t,PCOL[e.o]);
-      o.userData.done=wantDone; world.add(o); BMESH.set(e.id,o);
+    const wantDone=e.done>=1?1:0, wantEra=eraOf(e.o);
+    if(o&&o.userData.done===wantDone&&o.userData.era!==wantEra&&rebuilds>=3){
+      o.position.set(e.x,groundY(e.x,e.z),e.z); continue; // re-skins next frame
+    }
+    if(!o||o.userData.done!==wantDone||o.userData.era!==wantEra){
+      if(o){dropGroup(o);rebuilds++;}
+      o=wantDone?mkBuilding(e.t,PCOL[e.o],wantEra):scaffold(e.t,PCOL[e.o],wantEra);
+      o.userData.done=wantDone; o.userData.era=wantEra; world.add(o); BMESH.set(e.id,o);
     }
     o.position.set(e.x,groundY(e.x,e.z),e.z);
     o.rotation.y=ang4(e);
     if(!wantDone)o.scale.setScalar(0.55+0.45*clamp(e.done,0,1));
     else o.scale.setScalar(1);
   }
-  for(const [id,o] of BMESH)if(!live.has(id)){world.remove(o);BMESH.delete(id);}
+  for(const [id,o] of BMESH)if(!live.has(id)){dropGroup(o);BMESH.delete(id);}
 }
 
 /* ---- per-frame instance fill ---- */
@@ -1520,9 +1679,9 @@ function drawWorld(alpha){
     e.rx=lerp(e.rx,e.x,0.32); e.rz=lerp(e.rz,e.z,0.32);
     const y=groundY(e.rx,e.rz);
     if(e.k==='u'){
-      const c=PCOL[e.o];
-      pushI(e.t+'_b',e.rx,y,e.rz,e.ang,1,c);
-      pushI(e.t+'_h',e.rx,y,e.rz,e.ang,1,e.t==='cav'?c:undefined);
+      const c=PCOL[e.o], parts=unitPool(e.t,eraOf(e.o));
+      for(let i=0;i<parts.length;i++)
+        pushI(parts[i],e.rx,y,e.rz,e.ang,1,IM[parts[i]].userData.tint?c:undefined);
       if(sel.has(e.id))pushI('ring',e.rx,y+0.06,e.rz,0,1.1,0xF0D080);
     }else if(e.k==='r'){
       if(e.t==='tree'){pushI('tr_t',e.x,y,e.z,e.id*0.7,1);pushI('tr_f',e.x,y,e.z,e.id*0.7,0.8+((e.id*37)%20)/60);}
@@ -1552,7 +1711,7 @@ function updateCam(){
   sun.target.updateMatrixWorld();
 }
 function buildScene(){
-  buildTerrain(); buildPools(); buildMM(); for(const [id,o] of BMESH)world.remove(o); BMESH.clear();
+  buildTerrain(); buildPools(); buildMM(); for(const [id,o] of BMESH)dropGroup(o); BMESH.clear();
 }
 /* ================================================================= input = */
 const SELN=new Set(); let selPrimary=null;
@@ -1638,7 +1797,7 @@ function tryPlace(sx,sy){
 function setGhost(t){
   ghostType=t;
   if(ghost){world.remove(ghost);ghost=null;}
-  if(t){ghost=mkBuilding(t,PCOL[S.me]);
+  if(t){ghost=mkBuilding(t,PCOL[S.me],eraOf(S.me));
     ghost.traverse(o=>{if(o.material){o.material=o.material.clone();o.material.transparent=true;o.material.opacity=0.5;}});
     world.add(ghost);}
   refreshCmd();
@@ -1818,7 +1977,7 @@ function renderAgeTrack(){
   const p=S.players[S.me]; if(!p)return;
   const el=$('agetrack');
   el.innerHTML='<div id="agefill"></div>'+AGES.map((a,i)=>
-    `<div class="age ${i<p.age?'done':''} ${i===p.age?'cur':''}">${a.n}</div>`).join('');
+    `<div class="age ${i<p.age?'done':''} ${i===p.age?'cur':''}" title="${ERANAME[ERA[i]]}">${a.n}</div>`).join('');
 }
 function updateHUD(){
   const p=S.players[S.me]; if(!p)return;
