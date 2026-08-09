@@ -7,11 +7,17 @@
 const URL_  = process.env.KV_REST_API_URL   || process.env.UPSTASH_REDIS_REST_URL;
 const TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
 
-async function redis(path) {
-  const r = await fetch(`${URL_}/${path}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+async function redis(path, body) {
+  // Values go in the POST body, never the URL. Save blobs and multiplayer
+  // snapshots run to tens of kilobytes and would blow past URL length limits.
+  const opts = { headers: { Authorization: `Bearer ${TOKEN}` } };
+  if (body !== undefined) { opts.method = 'POST'; opts.body = body; }
+  const r = await fetch(`${URL_}/${path}`, opts);
   if (!r.ok) throw new Error(`upstash ${r.status}`);
   return (await r.json()).result;
 }
+
+export const config = { api: { bodyParser: { sizeLimit: '2mb' } } };
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -26,9 +32,8 @@ export default async function handler(req, res) {
     if (op === 'get')  return res.status(200).json({ value: await redis(`get/${key}`) });
     if (op === 'del')  return res.status(200).json({ value: await redis(`del/${key}`) });
     if (op === 'set') {
-      const body = encodeURIComponent(String(value ?? ''));
       const secs = Math.min(Math.max(parseInt(ttl, 10) || 3600, 30), 86400);
-      await redis(`set/${key}/${body}?EX=${secs}`);
+      await redis(`set/${key}?EX=${secs}`, String(value ?? ''));
       return res.status(200).json({ value: 'OK' });
     }
     return res.status(400).json({ error: 'Unknown op' });
