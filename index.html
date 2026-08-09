@@ -116,6 +116,13 @@ canvas{display:block}
   padding:8px 14px;font-size:11px;letter-spacing:.08em;z-index:40;opacity:0;transition:opacity .25s;
   pointer-events:none;text-transform:uppercase;white-space:nowrap}
 #toast.show{opacity:1}
+#svo{position:fixed;inset:0;z-index:65;background:#0B0907E8;display:flex;
+  align-items:center;justify-content:center;padding:16px}
+.slot{display:flex;align-items:center;gap:8px;padding:9px 11px;font-size:11px;cursor:pointer;margin-bottom:5px}
+.slot b{font-weight:700;letter-spacing:.05em}
+.slot span{margin-left:auto;font-size:9px;color:var(--bone-dim);text-align:right}
+.slot.empty{opacity:.5}
+#code2{font-size:26px;letter-spacing:.3em;color:var(--ochre);font-weight:700;text-align:center}
 #end{position:fixed;inset:0;z-index:70;background:#0B0907F2;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:18px}
 #end h2{font-size:38px;letter-spacing:.16em;text-transform:uppercase}
@@ -145,6 +152,7 @@ canvas{display:block}
   <div class="mbtn slab on" id="mSel">Select</div>
   <div class="mbtn slab" id="mAll">All army</div>
   <div class="mbtn slab" id="mIdle">Idle vill</div>
+  <div class="mbtn slab" id="mSave">Save</div>
 </div>
 
 <div id="sel" class="slab">
@@ -161,7 +169,9 @@ canvas{display:block}
   <h1>Flint<em>&amp; Fire</em></h1>
   <div class="tag">Eight ages · one continent · no turns</div>
   <div class="mcol" id="mMain">
+    <div class="big slab go hidden" data-go="continue" id="btnCont">Continue</div>
     <div class="big slab go" data-go="skirmish">Skirmish</div>
+    <div class="big slab" data-go="load">Load a saved game</div>
     <div class="mrow">
       <div class="big slab" data-go="host">Host game</div>
       <div class="big slab" data-go="join">Join game</div>
@@ -200,6 +210,17 @@ canvas{display:block}
     <div class="big slab" data-go="back">Back</div>
   </div>
 
+  <div class="mcol hidden" id="mLoad">
+    <div class="lbl" style="text-align:center">Saved on this device</div>
+    <div id="slotList"></div>
+    <div class="lbl" style="text-align:center;margin-top:6px">Or bring one from another device</div>
+    <input id="savecode" maxlength="4" autocomplete="off" autocapitalize="characters"
+      style="width:100%;padding:12px;font-size:20px;letter-spacing:.3em;text-align:center;text-transform:uppercase;background:#0F0D0B;border:1px solid #4A3F33;color:var(--ochre);font-family:var(--ui);font-weight:700">
+    <div id="loadmsg" class="lbl" style="text-align:center;min-height:14px"></div>
+    <div class="big slab go" data-go="doCode">Fetch save</div>
+    <div class="big slab" data-go="back">Back</div>
+  </div>
+
   <div class="mcol hidden" id="mHelp">
     <div class="slab" style="padding:14px;font-size:11px;line-height:1.7;color:var(--bone-dim)">
       <b style="color:var(--bone)">Phone</b><br>
@@ -215,6 +236,16 @@ canvas{display:block}
       hold it for four minutes.
     </div>
     <div class="big slab" data-go="back">Back</div>
+  </div>
+</div>
+
+<div id="svo" class="hidden">
+  <div class="slab" style="width:min(340px,92vw);padding:16px;display:flex;flex-direction:column;gap:8px">
+    <div class="lbl" style="text-align:center">Save this game</div>
+    <div id="svoList"></div>
+    <div class="big slab go" id="svoCode" style="font-size:11px">Create a share code</div>
+    <div id="svoMsg" class="lbl" style="text-align:center;min-height:28px"></div>
+    <div class="big slab" id="svoClose" style="font-size:11px">Back to the game</div>
   </div>
 </div>
 
@@ -1102,6 +1133,8 @@ function findStarts(n){
 /* ============================================================ game setup = */
 const CFG={ai:2,diff:1,start:0,map:0};
 function startGame(cfg){
+  S.cfg={seed:cfg.seed,mapType:cfg.mapType,n:cfg.n,ai:cfg.ai,diff:cfg.diff,
+         start:cfg.start,me:cfg.me,host:cfg.host,mode:cfg.mode};
   S.seed=cfg.seed; S.mapType=cfg.mapType; S.me=cfg.me; S.host=cfg.host;
   S.mode=cfg.mode; S.over=0; S.tick=0; S.ents=[]; S.byId=new Map(); S.nextId=1;
   S.proj=[]; S.fx=[]; FIELDS.clear(); fieldStamp=0;
@@ -1111,7 +1144,8 @@ function startGame(cfg){
   const starts=findStarts(cfg.n);
   RND=mulberry32(cfg.seed^0x5f3a);
   scatter(1,starts);
-  for(let i=0;i<cfg.n;i++){
+  S.resMax=S.nextId-1; // resource nodes own ids 1..resMax and regenerate from the seed
+  for(let i=0;i<(cfg.blank?0:cfg.n);i++){
     const s=starts[i], p=S.players[i];
     if(cfg.start===2){p.r={f:5000,w:5000,g:3000,s:2500};}
     if(cfg.start>=1){
@@ -1142,6 +1176,127 @@ function endGame(winner,why){
   document.getElementById('endT').style.color=win?'var(--ochre)':'var(--ember)';
   document.getElementById('endS').textContent=(winner>=0?PNAME[winner]+' — ':'')+why;
   if(NET.on&&NET.host)NET.send({t:'end',w:winner,y:why});
+}
+
+/* ========================================================= save & resume = */
+const SAVE_V=1, ORDT=['','move','amove','attack','gather','ret','build'], RESI=['f','w','g','s'];
+const NO_RALLY=-999999;
+
+/* Only the divergence from world generation is stored. The map, and every
+   untouched tree, comes back from the seed for free. */
+function serialize(){
+  if(!S.started||S.over||NET.on)return null;
+  const U=[],Bd=[],Rd=[],Rp=[];
+  for(const e of S.ents){
+    if(e.dead)continue;
+    if(e.k==='u'){
+      const o=e.ord||{}, c=Math.max(0,ORDT.indexOf(o.t||''));
+      let a=0,b=0;
+      if(o.t==='move'||o.t==='amove'){a=Math.round(o.x*8);b=Math.round(o.z*8);}
+      else if(o.t==='attack'||o.t==='build')a=o.id|0;
+      else if(o.t==='gather'){a=o.id|0;b=Math.max(0,RESI.indexOf(o.res||'f'));}
+      else if(o.t==='ret'){a=Math.max(0,RESI.indexOf(o.res||'f'));b=o.back|0;}
+      U.push(e.id,TIDX[e.t],e.o,Math.round(e.x*8),Math.round(e.z*8),Math.round(e.hp),
+        Math.round((e.ang||0)*40),Math.round((e.carry||0)*8),
+        Math.max(0,RESI.indexOf(e.cres||'f')),c,a,b);
+    }else if(e.k==='b'){
+      Bd.push(e.id,TIDX[e.t],e.o,Math.round(e.x*8),Math.round(e.z*8),Math.round(e.hp),
+        Math.round(e.done*1000),Math.round(e.prog*1000),Math.round(e.qt*100),
+        Math.round(e.food||0),
+        e.rally?Math.round(e.rally.x*8):NO_RALLY, e.rally?Math.round(e.rally.z*8):0,
+        e.q.length);
+      for(const q of e.q)Bd.push(TIDX[q]);
+    }
+  }
+  for(let id=1;id<=S.resMax;id++){
+    const e=S.byId.get(id);
+    if(!e||e.dead)Rd.push(id);
+    else if(e.k==='r'&&Math.round(e.amt)!==RES[e.t].amt)Rp.push(id,Math.round(e.amt));
+  }
+  const P=S.players.map(p=>[Math.round(p.r.f),Math.round(p.r.w),Math.round(p.r.g),Math.round(p.r.s),
+    p.age,Math.round(p.ageP*1000),p.ageing?1:0,p.alive?1:0,p.wonder?1:0,Math.round(p.wonderT),
+    p.ai_.wave|0,Math.round(p.ai_.nextAtk),Math.round(p.ai_.bd)]);
+  return {v:SAVE_V,c:S.cfg,k:S.tick,n:S.nextId,P,U,B:Bd,Rd,Rp};
+}
+function deserialize(st){
+  if(!st||st.v!==SAVE_V)throw new Error('That save came from a different build of the game');
+  if(!st.c||!st.c.n)throw new Error('That save looks damaged');
+  startGame(Object.assign({},st.c,{blank:true}));
+  for(const id of st.Rd){const e=S.byId.get(id);if(e)e.dead=1;}
+  S.ents=S.ents.filter(e=>{if(e.dead)S.byId.delete(e.id);return !e.dead;});
+  for(let i=0;i<st.Rp.length;i+=2){const e=S.byId.get(st.Rp[i]);if(e)e.amt=st.Rp[i+1];}
+  st.P.forEach((q,i)=>{const p=S.players[i]; if(!p)return;
+    p.r={f:q[0],w:q[1],g:q[2],s:q[3]}; p.age=q[4]; p.ageP=q[5]/1000; p.ageing=q[6];
+    p.alive=!!q[7]; p.wonder=q[8]; p.wonderT=q[9];
+    p.ai_.wave=q[10]; p.ai_.nextAtk=q[11]; p.ai_.bd=q[12];});
+  // buildings before units so footprints exist before anyone stands on them
+  for(let i=0;i<st.B.length;){
+    const id=st.B[i++],t=TYPES[st.B[i++]],o=st.B[i++],x=st.B[i++]/8,z=st.B[i++]/8,
+      hp=st.B[i++],done=st.B[i++]/1000,prog=st.B[i++]/1000,qt=st.B[i++]/100,
+      food=st.B[i++],rx=st.B[i++],rz=st.B[i++],ql=st.B[i++];
+    const d=B[t], e={k:'b',id,t,o,x,z,mhp:d.hp,hp,done,prog,q:[],qt,r:d.r,cd:0,
+      food:food||0,builders:0,stall:0};
+    for(let j=0;j<ql;j++)e.q.push(TYPES[st.B[i++]]);
+    if(rx!==NO_RALLY)e.rally={x:rx/8,z:rz/8};
+    S.ents.push(e); S.byId.set(id,e); stampBlock(e,1);
+  }
+  for(let i=0;i<st.U.length;i+=12){
+    const id=st.U[i],t=TYPES[st.U[i+1]],o=st.U[i+2],p=S.players[o];
+    const stt=unitStat(t,p?p.age:0);
+    const e={k:'u',id,t,o,x:st.U[i+3]/8,z:st.U[i+4]/8,hp:st.U[i+5],mhp:stt.hp,st:stt,
+      ord:null,cd:0,ang:st.U[i+6]/40,vx:0,vz:0,carry:st.U[i+7]/8,cres:RESI[st.U[i+8]],
+      fld:null,gx:-1,gz:-1,agr:1,stuck:0,tier:stt,dropE:null};
+    const c=st.U[i+9], a=st.U[i+10], b2=st.U[i+11], ot=ORDT[c];
+    if(ot==='move'||ot==='amove')e.ord={t:ot,x:a/8,z:b2/8};
+    else if(ot==='attack'||ot==='build')e.ord={t:ot,id:a};
+    else if(ot==='gather')e.ord={t:ot,id:a,res:RESI[b2]};
+    else if(ot==='ret')e.ord={t:ot,res:RESI[a],back:b2};
+    S.ents.push(e); S.byId.set(id,e);
+  }
+  S.nextId=Math.max(st.n,S.nextId); S.tick=st.k; S.over=0;
+  FIELDS.clear(); fieldStamp++; rehash();
+  for(const p of S.players)recalcPop(p);
+  refreshCmd.sig=null; refreshCmd(); renderAgeTrack();
+  const mine=S.ents.find(e=>e.o===S.me&&e.k==='b')||S.ents.find(e=>e.o===S.me);
+  if(mine)centerOn(mine.x,mine.z);
+  return true;
+}
+
+/* device storage ---------------------------------------------------------- */
+const SKEY=n=>'flintfire:'+n, SLOTS=['auto','slot1','slot2','slot3'];
+const LS={
+  get(k){try{const v=localStorage.getItem(SKEY(k));return v?JSON.parse(v):null;}catch(e){return null;}},
+  set(k,v){try{localStorage.setItem(SKEY(k),JSON.stringify(v));return true;}
+           catch(e){return false;}},
+  ok(){try{localStorage.setItem(SKEY('t'),'1');localStorage.removeItem(SKEY('t'));return true;}
+       catch(e){return false;}}
+};
+function saveTo(slot){
+  const d=serialize(); if(!d)return null;
+  const rec={t:Date.now(),age:AGES[S.players[S.me].age].n,tick:S.tick,
+             foes:S.cfg.n-1,d};
+  if(!LS.set(slot,rec)){toast('No room left in device storage');return null;}
+  return rec;
+}
+function slotLabel(rec){
+  if(!rec)return null;
+  const mins=Math.round(rec.tick/20/60), ago=Date.now()-rec.t;
+  const when=ago<60000?'just now':ago<3600000?Math.round(ago/60000)+' min ago':
+             ago<86400000?Math.round(ago/3600000)+' h ago':Math.round(ago/86400000)+' d ago';
+  return {main:rec.age+' Age · '+mins+' min',sub:rec.foes+' rival'+(rec.foes===1?'':'s')+' · '+when};
+}
+function renderSlots(el,onPick,includeAuto){
+  el.innerHTML='';
+  for(const k of SLOTS){
+    if(k==='auto'&&!includeAuto)continue;
+    const rec=LS.get(k), lab=slotLabel(rec);
+    const d=document.createElement('div');
+    d.className='slot slab'+(lab?'':' empty');
+    d.innerHTML=`<b>${k==='auto'?'Autosave':'Slot '+k.slice(-1)}</b>`+
+      (lab?`<span>${lab.main}<br>${lab.sub}</span>`:`<span>empty</span>`);
+    d.onclick=()=>onPick(k,rec);
+    el.appendChild(d);
+  }
 }
 
 /* ============================================================ networking = */
@@ -2253,7 +2408,7 @@ if(navigator.xr)navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
 else $('vrbtn').style.display='none';
 
 /* ================================================================== loop = */
-let acc=0,last=0,frame=0,lastSent=-1;
+let acc=0,last=0,frame=0,lastSent=-1,lastAuto=0;
 function loop(t){
   if(!last){last=t;renderer.render(scene,cam);return;}
   const dt=Math.min(120,t-last); last=t; frame++;
@@ -2264,6 +2419,7 @@ function loop(t){
       if(acc>TICKMS*6)acc=0;
     }
     if(NET.on&&NET.host&&S.tick-lastSent>=3){lastSent=S.tick;NET.send(encodeSnap());}
+    if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
     updateCam(); drawWorld();
@@ -2276,8 +2432,20 @@ function loop(t){
 }
 
 /* ================================================================== menu = */
-function show(id){['mMain','mSkirm','mHost','mJoin','mHelp'].forEach(k=>
+function show(id){['mMain','mSkirm','mHost','mJoin','mHelp','mLoad'].forEach(k=>
   $(k)&&$(k).classList.toggle('hidden',k!==id));}
+function refreshContinue(){
+  const b=$('btnCont'); if(!b)return;
+  b.classList.toggle('hidden',!LS.get('auto'));
+}
+function loadRecord(rec,where){
+  if(!rec||!rec.d){(where||toast)('That save is empty');return;}
+  try{
+    deserialize(rec.d);
+    $('menu').classList.add('hidden'); $('end').classList.add('hidden');
+    toast('Resumed in the '+AGES[S.players[S.me].age].n+' Age');
+  }catch(e){ (where||toast)(e.message); }
+}
 document.querySelectorAll('[data-set]').forEach(g=>{
   g.querySelectorAll('.v').forEach(v=>v.onclick=()=>{
     g.querySelectorAll('.v').forEach(o=>o.classList.remove('on'));
@@ -2290,6 +2458,21 @@ $('menu').addEventListener('click',e=>{
   else if(a==='host'){show('mHost');hostRoom();}
   else if(a==='join')show('mJoin');
   else if(a==='help')show('mHelp');
+  else if(a==='load'){show('mLoad');$('loadmsg').textContent='';
+    renderSlots($('slotList'),(k,rec)=>{
+      if(!rec){$('loadmsg').textContent='That slot is empty.';return;}
+      loadRecord(rec,t=>{$('loadmsg').textContent=t;});
+    },true);}
+  else if(a==='continue')loadRecord(LS.get('auto'));
+  else if(a==='doCode'){
+    const c=($('savecode').value||'').trim().toUpperCase();
+    if(c.length!==4){$('loadmsg').textContent='Four letters, please.';return;}
+    $('loadmsg').textContent='Fetching…';
+    kv('get','ff:save:'+c).then(v=>{
+      if(!v){$('loadmsg').textContent='No save under that code.';return;}
+      loadRecord(JSON.parse(v),t=>{$('loadmsg').textContent=t;});
+    }).catch(()=>{$('loadmsg').textContent='Key store unreachable.';});
+  }
   else if(a==='back')show('mMain');
   else if(a==='startSkirmish'){
     const n=CFG.ai+1, ai=[false]; for(let i=1;i<n;i++)ai.push(true);
@@ -2314,8 +2497,43 @@ $('menu').addEventListener('click',e=>{
     if(c.length===4)joinRoom(c); else netmsg2('Four letters, please.');
   }
 });
+/* ---- in-game save panel ---- */
+function drawSaveSlots(){
+  renderSlots($('svoList'),k=>{
+    if(k==='auto')return;
+    const r=saveTo(k);
+    $('svoMsg').textContent=r?'Saved to slot '+k.slice(-1)+'.':'Could not save.';
+    drawSaveSlots();
+  },false);
+}
+function openSave(){
+  if(NET.on)return toast('Multiplayer games are not saved');
+  if(!S.started||S.over)return;
+  $('svoMsg').textContent='';
+  drawSaveSlots();
+  $('svo').classList.remove('hidden');
+}
+$('mSave').onclick=openSave;
+$('svoClose').onclick=()=>$('svo').classList.add('hidden');
+$('svoCode').onclick=()=>{
+  const d=serialize();
+  if(!d){$('svoMsg').textContent='Nothing to save yet.';return;}
+  const code=rc();
+  $('svoMsg').textContent='Uploading…';
+  kv('set','ff:save:'+code,JSON.stringify(d),86400)
+    .then(()=>{$('svoMsg').innerHTML='<div id="code2">'+code+
+      '</div>Enter this on another device. It keeps for a day.';})
+    .catch(()=>{$('svoMsg').textContent='Key store unreachable — the device save still worked.';});
+};
+/* never lose a game to a backgrounded tab */
+function panicSave(){ if(S.started&&!S.over&&!NET.on)saveTo('auto'); }
+addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')panicSave();});
+addEventListener('pagehide',panicSave);
+
 /* ================================================================== boot = */
 initGL();
+if(!LS.ok()){const b=$('btnCont');if(b)b.classList.add('hidden');}
+refreshContinue();
 renderer.setAnimationLoop(loop);
 </script>
 </body>
