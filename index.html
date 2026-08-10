@@ -2300,8 +2300,10 @@ canvas.addEventListener('pointermove',e=>{
     const d=Math.hypot(a.x-b.x,a.y-b.y), ang=Math.atan2(b.y-a.y,b.x-a.x);
     const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
     CAMS.tdist=clamp(CAMS.tdist*(P.pinch/Math.max(1,d)),12,140);
+    // twist follows the fingers: rotate them clockwise and the camera yaws
+    // clockwise too. Negate `da` to go back to the opposite convention.
     let da=ang-P.ang; if(da>Math.PI)da-=TAU; if(da<-Math.PI)da+=TAU;
-    CAMS.yaw-=da;
+    CAMS.yaw+=da;
     const k=CAMS.dist*0.0022;
     // horizontal is inverted on purpose: dragging left pulls the map right
     const dx=-(mx-P.lx)*k, dy=(my-P.ly)*k;
