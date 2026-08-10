@@ -143,7 +143,7 @@ canvas{display:block}
   <div class="res wood"><b id="rW">0</b><span>Wood</span></div>
   <div class="res gold"><b id="rG">0</b><span>Gold</span></div>
   <div class="res stone"><b id="rS">0</b><span>Stone</span></div>
-  <div class="res pop" id="rPwrap"><b id="rP">0/0</b><span>Tribe</span></div>
+  <div class="res pop" id="rPwrap"><b id="rP">0/0</b><span id="rPl">Tribe</span></div>
 </div>
 <div id="agetrack"><div id="agefill"></div></div>
 
@@ -328,6 +328,7 @@ const RES={
  rock :{res:'s', amt:560, r:0.7},
 };
 const GATHER={f:0.62,w:0.60,g:0.52,s:0.50}, CARRY=18;
+const POPMAX=100;   // hard ceiling per player; instance pools are sized off this
 const PCOL=[0x4FA3D9,0xD94F4F,0x63C46B,0xE3C245];
 const PNAME=['Blue','Red','Green','Amber'];
 
@@ -364,7 +365,7 @@ function fbm(n,x,y,oct,lac,gain){let a=1,fr=1,s=0,m=0;
   for(let i=0;i<oct;i++){s+=a*n(x*fr,y*fr);m+=a;a*=gain;fr*=lac;}return s/m;}
 
 /* height field, (NT+1)^2 */
-let H=null, PASS=null, BLOCK=null;
+let H=null, PASS=null, BLOCK=null, WALK=null;
 function genMap(seed,mapType){
   RND=mulberry32(seed);
   const n1=vnoise(seed), n2=vnoise(seed*7+13);
@@ -392,6 +393,8 @@ function genMap(seed,mapType){
     PASS[y*NT+x]=(h>WATER+0.25 && sl<2.6)?1:0;
   }
   keepLargestLand();
+  WALK=new Uint8Array(NT*NT);
+  for(let i=0;i<NT*NT;i++)WALK[i]=PASS[i]&&!BLOCK[i]?1:0;
 }
 /* Land that can't be walked to can't be fought over. Keep one connected mass;
    everything else stays as scenery. */
@@ -414,6 +417,7 @@ function keepLargestLand(){
     if(n>bestN){bestN=n;best=id;} id++;
   }
   for(let i=0;i<NT*NT;i++)if(comp[i]!==best)PASS[i]=0;
+  if(WALK)for(let i=0;i<NT*NT;i++)WALK[i]=PASS[i]&&!BLOCK[i]?1:0;
 }
 const hAt=(x,y)=>H[clamp(y,0,NT)*(NT+1)+clamp(x,0,NT)];
 function tileH(x,y){return (hAt(x,y)+hAt(x+1,y)+hAt(x,y+1)+hAt(x+1,y+1))*0.25;}
@@ -428,16 +432,17 @@ function groundY(wx,wz){
 }
 const w2t=w=>clamp(Math.floor((w+WORLD/2)/TS),0,NT-1);
 const t2w=t=>(t+0.5)*TS-WORLD/2;
-const walkable=(tx,tz)=>tx>=0&&tz>=0&&tx<NT&&tz<NT&&PASS[tz*NT+tx]===1&&BLOCK[tz*NT+tx]===0;
+const walkable=(tx,tz)=>tx>=0&&tz>=0&&tx<NT&&tz<NT&&WALK[tz*NT+tx]===1;
 
 /* --------------------------------------------------- flow-field pathing --- */
 /* One BFS field per goal tile, shared by every unit heading there.
    This is the single biggest reason 200 units run at 60fps on a phone. */
-const FIELDS=new Map(); let fieldStamp=0, fieldBudget=4;
+const FIELDS=new Map(); let fieldStamp=0, fieldBudget=2;
 function getField(gx,gz){
   const key=gz*NT+gx, f=FIELDS.get(key);
   if(f&&f.stamp===fieldStamp){f.used=S.tick;return f;}
   if(f&&fieldBudget<=0){f.used=S.tick;return f;} // stale but serviceable this tick
+  if(fieldBudget<=0)return null;   // caller steers directly for one tick
   fieldBudget--;
   const dist=new Uint16Array(NT*NT).fill(65535);
   const q=new Int32Array(NT*NT); let qh=0,qt=0;
@@ -452,13 +457,17 @@ function getField(gx,gz){
       }
   }
   for(const s of seeds){dist[s]=0;q[qt++]=s;}
+  const W=WALK;
   while(qh<qt){
     const c=q[qh++], cx=c%NT, cz=(c/NT)|0, d=dist[c]+1;
+    const l=cx>0, r2=cx<NT-1, u=cz>0, dn=cz<NT-1;
     for(let i=0;i<8;i++){
       const dx=NB[i*2],dz=NB[i*2+1], x=cx+dx,z=cz+dz;
-      if(!walkable(x,z))continue;
-      if(i>3&&(!walkable(cx+dx,cz)||!walkable(cx,cz+dz)))continue; // no corner cutting
-      const ni=z*NT+x, nd=d+(i>3?1:0);
+      if((dx<0&&!l)||(dx>0&&!r2)||(dz<0&&!u)||(dz>0&&!dn))continue;
+      const ni=z*NT+x;
+      if(!W[ni])continue;
+      if(i>3&&(!W[cz*NT+x]||!W[z*NT+cx]))continue; // no cutting building corners
+      const nd=d+(i>3?1:0);
       if(nd<dist[ni]){dist[ni]=nd;q[qt++]=ni;}
     }
   }
@@ -487,7 +496,7 @@ const S={tick:0,players:[],ents:[],byId:new Map(),nextId:1,started:false,over:0,
 
 function mkPlayer(i,ai,diff){
   return {i,ai,diff:diff|0,col:PCOL[i],name:PNAME[i],
-    r:{f:200,w:200,g:100,s:100},pop:0,cap:0,age:0,
+    r:{f:200,w:200,g:100,s:100},pop:0,cap:0,capRaw:0,age:0,
     ageP:0,ageing:0,alive:true,wonder:0,wonderT:0,
     ai_:{tPhase:0,nextAtk:90,wave:0,scoutDone:0,bd:0}};
 }
@@ -528,7 +537,7 @@ function stampBlock(b,v){
   if(B[b.t].walk){fieldStamp++;return;}
   const r=btiles(b.r), cx=w2t(b.x), cz=w2t(b.z);
   for(let z=cz-r;z<=cz+r;z++)for(let x=cx-r;x<=cx+r;x++)
-    if(x>=0&&z>=0&&x<NT&&z<NT)BLOCK[z*NT+x]=v;
+    if(x>=0&&z>=0&&x<NT&&z<NT){const i=z*NT+x;BLOCK[i]=v;WALK[i]=PASS[i]&&!v?1:0;}
   fieldStamp++;
   if(v)for(const e of S.ents)if(!e.dead&&e.k==='u'&&Math.abs(e.x-b.x)<8&&Math.abs(e.z-b.z)<8)shoveOut(e);
 }
@@ -564,20 +573,26 @@ const rad=e=>e.k==='u'?0.45:e.r;
 function canAfford(p,c){return (!c.f||p.r.f>=c.f)&&(!c.w||p.r.w>=c.w)&&(!c.g||p.r.g>=c.g)&&(!c.s||p.r.s>=c.s);}
 function pay(p,c){if(c.f)p.r.f-=c.f;if(c.w)p.r.w-=c.w;if(c.g)p.r.g-=c.g;if(c.s)p.r.s-=c.s;}
 function refund(p,c){if(c.f)p.r.f+=c.f;if(c.w)p.r.w+=c.w;if(c.g)p.r.g+=c.g;if(c.s)p.r.s+=c.s;}
-function recalcPop(p){
-  let cap=0,pop=0;
-  for(const e of S.ents){ if(e.dead||e.o!==p.i)continue;
-    if(e.k==='b'&&e.done&&B[e.t].pop)cap+=B[e.t].pop;
-    if(e.k==='u')pop+=e.st.pop; }
-  p.cap=Math.min(cap,60); p.pop=pop;
+function recalcAllPop(){
+  for(const p of S.players){p.capRaw=0;p.pop=0;}
+  for(const e of S.ents){
+    if(e.dead||e.o===undefined)continue;
+    const p=S.players[e.o]; if(!p)continue;
+    if(e.k==='b'){ if(e.done&&B[e.t].pop)p.capRaw+=B[e.t].pop; }
+    else if(e.k==='u')p.pop+=e.st.pop;
+  }
+  for(const p of S.players)p.cap=Math.min(p.capRaw,POPMAX);
 }
+const recalcPop=()=>recalcAllPop();
 
 /* -------------------------------------------------------------- orders --- */
 function order(u,o){u.ord=o;u.fld=null;u.gx=-1;u.stuck=0;}
 function setGoal(u,x,z){
   const gx=w2t(x),gz=w2t(z);
   if(u.gx!==gx||u.gz!==gz||!u.fld||u.fld.stamp!==fieldStamp){
-    u.gx=gx;u.gz=gz;u.fld=getField(gx,gz);
+    const f=getField(gx,gz);
+    if(f){u.gx=gx;u.gz=gz;u.fld=f;}
+    else{u.fld=null;u.gx=-1;} // retry next tick rather than cache a miss
   }
 }
 function dropoffFor(u){
@@ -621,6 +636,10 @@ function applyCmd(c,pi){
     const u=b.q.pop(); refund(p,U[u].cost); if(!b.q.length)b.qt=0; break;}
   case 'place':{
     const d=B[c.b]; if(!d||p.age<d.age)break;
+    // a hut past the ceiling adds nothing, so don't take the wood for it
+    if(d.pop&&!d.tr&&!d.drop&&p.capRaw>=POPMAX){
+      if(pi===S.me){toast('Your tribe is already at its limit');SFX.deny();}
+      break;}
     if(!canAfford(p,d.cost))break;
     if(!placeOK(c.b,c.x,c.z))break;
     if(c.b==='wonder'&&S.ents.some(e=>!e.dead&&e.k==='b'&&e.t==='wonder'&&e.o===pi))break;
@@ -690,7 +709,9 @@ function moveTo(u,tx,tz,arrive,dt){
   // separation
   let sx=0,sz=0;
   near(u.x,u.z,1.6,o=>{
-    if(o===u||o.dead||o.k==='b')return;
+    // only other units push back; trees and rocks never blocked movement anyway,
+    // and they dominate the entity count
+    if(o===u||o.dead||o.k!=='u')return;
     const ox=u.x-o.x,oz=u.z-o.z, l2=ox*ox+oz*oz;
     const rr2=(rad(u)+rad(o))**2;
     if(l2<rr2&&l2>1e-5){const l=Math.sqrt(l2);sx+=ox/l*(1-l/Math.sqrt(rr2));sz+=oz/l*(1-l/Math.sqrt(rr2));}
@@ -749,7 +770,7 @@ function tryAttack(u,tg,dt){
 }
 
 function tickSim(){
-  const dt=TICK; S.tick++; fieldBudget=4;
+  const dt=TICK; S.tick++; fieldBudget=2;
   rehash();
   for(const e of S.ents)if(e.k==='b'&&!e.dead)e.builders=0;
 
@@ -891,8 +912,8 @@ function tickSim(){
       }}
     if(p.wonder&&p.wonderT>0){ p.wonderT-=dt;
       if(p.wonderT<=0)endGame(p.i,'Wonder stood the age'); }
-    recalcPop(p);
   }
+  recalcAllPop();
 
   /* ---- cleanup + victory ---- */
   if(S.tick%20===0){
@@ -1012,7 +1033,7 @@ function aiTick(p){
     for(const tc of tcs)if(tc.q.length<2)applyCmd({c:'train',bid:tc.id,u:'vill'},p.i);
 
   /* housing */
-  if(p.cap-p.pop<5&&sites<2&&canAfford(p,B.house.cost)){
+  if(p.cap-p.pop<5&&p.capRaw<POPMAX&&sites<2&&canAfford(p,B.house.cost)){
     const s=aiSpot(p,'house',ctr.x,ctr.z,3,14);
     if(s){applyCmd({c:'place',b:'house',x:s.x,z:s.z,ids:pickBuilders(my.vill,1)},p.i);sites++;}
   }
@@ -1645,6 +1666,9 @@ const UGEO={
       [ug(new TH.BoxGeometry(0.10,0.10,2.00),0,1.30,-0.10,-1.1),0,1]]],        // beam
 };
 const UPOOL={};
+/* worst case is every player at POPMAX in the same unit line and era, all
+   sharing one pool. Overflowing it makes units silently invisible. */
+const UPCAP=POPMAX*4+24;
 /* pools are built the first time an era actually appears on the field, so a
    Stone Age skirmish never allocates the Imperial geometry */
 function unitPool(t,era){
@@ -1653,7 +1677,7 @@ function unitPool(t,era){
   const parts=UGEO[t][era](era), names=[];
   parts.forEach((p,i)=>{
     const nm=key+'_'+i;
-    const m=pool(nm,p[0],p[1]||0xffffff,170);
+    const m=pool(nm,p[0],p[1]||0xffffff,UPCAP);
     m.userData.tint=!!p[2];
     names.push(nm);
   });
@@ -1662,8 +1686,8 @@ function unitPool(t,era){
 function buildPools(){
   for(const k in IM){world.remove(IM[k]);IM[k].geometry.dispose();delete IM[k];}
   for(const k in UPOOL)delete UPOOL[k];
-  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,260);
-  pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,140);
+  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,POPMAX+40);
+  pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,300);
   // resources
   pool('tr_t',new THREE.CylinderGeometry(0.14,0.2,1.1,5),0x5A4326,2400).geometry.translate(0,0.55,0);
   pool('tr_f',new THREE.ConeGeometry(0.85,1.9,6),0x2F5D2A,2400).geometry.translate(0,1.85,0);
@@ -2135,6 +2159,15 @@ function musicTick(){
 
 /* ================================================================= input = */
 const SELN=new Set(); let selPrimary=null;
+/* Villagers are fire-and-forget: give one a job and the selection clears so the
+   next tap can't countermand it. Soldiers stay selected, because retargeting
+   mid-fight is the whole game. Set to false to keep everything selected. */
+const CLEAR_AFTER_TASK=true;
+function taskDone(ids){
+  if(!CLEAR_AFTER_TASK||!ids||!ids.length)return;
+  for(const i of ids){const e=S.byId.get(i); if(!e||e.t!=='vill')return;}
+  SELN.clear(); afterSelect();
+}
 const canvas=document.getElementById('gl');
 const P={t:[],start:0,moved:0,sx:0,sy:0,lx:0,ly:0,pinch:0,ang:0,box:false,long:0,lastTap:0,lastId:0};
 const boxEl=document.getElementById('box');
@@ -2208,13 +2241,14 @@ function issueOrder(sx,sy,attackMove){
   NET.sendCmd({c:'move',ids,x:g?g.x:tgt.x,z:g?g.z:tgt.z,a:attackMove?1:0,
     tid:tgt&&tgt.k!=='r'?(tgt.o!==S.me||tgt.k==='b'?tgt.id:0):(tgt?tgt.id:0)});
   S.fx.push({x:g?g.x:tgt.x,z:g?g.z:tgt.z,t:0.4,big:false});
+  taskDone(ids);
 }
 function tryPlace(sx,sy){
   const g=pickGround(sx,sy); if(!g)return;
   if(!placeOK(ghostType,g.x,g.z)){toast('Cannot build there');SFX.deny();return;}
   const ids=[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;});
   NET.sendCmd({c:'place',b:ghostType,x:g.x,z:g.z,ids});
-  if(!P.shift){setGhost(null);}
+  if(!P.shift){setGhost(null);taskDone(ids);}
 }
 function setGhost(t){
   ghostType=t;
@@ -2241,7 +2275,7 @@ canvas.addEventListener('pointerdown',e=>{
     P.long=setTimeout(()=>{P.long=0;if(!P.moved&&!ghostType){issueOrder(P.sx,P.sy,true);toast('Attack move');navigator.vibrate&&navigator.vibrate(18);}},430);
     if(ghostType)moveGhost(p.x,p.y);
   }else{
-    clearTimeout(P.long);P.long=0;boxEl.style.display='none';P.box=false;
+    clearTimeout(P.long);P.long=0;boxEl.style.display='none';P.box=false;P.multi=true;
     const [a,b]=P.t; P.pinch=Math.hypot(a.x-b.x,a.y-b.y); P.ang=Math.atan2(b.y-a.y,b.x-a.x);
     P.lx=(a.x+b.x)/2; P.ly=(a.y+b.y)/2;
   }
@@ -2251,6 +2285,7 @@ canvas.addEventListener('pointermove',e=>{
   const t=P.t.find(q=>q.id===e.pointerId); if(!t)return;
   const p=ptFromEv(e); t.x=p.x;t.y=p.y;
   if(P.t.length===1){
+    if(P.multi)return; // a finger left over from a pan is not a new gesture
     P.moved=Math.max(P.moved,Math.hypot(p.x-P.sx,p.y-P.sy));
     if(ghostType){moveGhost(p.x,p.y);return;}
     if(P.moved>10){
@@ -2283,6 +2318,9 @@ canvas.addEventListener('pointerup',e=>{
   if(P.box){ boxEl.style.display='none'; P.box=false;
     if(Math.abs(t.x-P.sx)>12||Math.abs(t.y-P.sy)>12){selectBox(P.sx,P.sy,t.x,t.y);return;} }
   if(P.t.length)return;
+  // a two-finger pan never updates P.moved, so without this the gesture would
+  // fall through and be treated as a tap on the ground
+  if(P.multi){P.multi=false;P.moved=0;return;}
   if(P.moved>10)return;
   if(ghostType){tryPlace(t.x,t.y);return;}
   const ent=pickEnt(t.x,t.y,38);
@@ -2298,7 +2336,8 @@ canvas.addEventListener('pointerup',e=>{
   if(SELN.size){issueOrder(t.x,t.y,false);return;}
   if(ent){SELN.clear();SELN.add(ent.id);afterSelect();}
 },{passive:false});
-canvas.addEventListener('pointercancel',()=>{P.t.length=0;boxEl.style.display='none';P.box=false;});
+canvas.addEventListener('pointercancel',()=>{
+  P.t.length=0;boxEl.style.display='none';P.box=false;P.multi=false;P.moved=0;});
 canvas.addEventListener('wheel',e=>{CAMS.tdist=clamp(CAMS.tdist*(1+Math.sign(e.deltaY)*0.12),12,140);},{passive:true});
 addEventListener('keydown',e=>{
   if(e.key==='Shift')P.shift=true;
@@ -2408,6 +2447,7 @@ function updateHUD(){
   $('rG').textContent=Math.floor(p.r.g); $('rS').textContent=Math.floor(p.r.s);
   $('rP').textContent=p.pop+'/'+p.cap;
   $('rPwrap').classList.toggle('full',p.pop>=p.cap);
+  $('rPl').textContent=p.capRaw>=POPMAX?'Tribe · max':'Tribe';
   const f=$('agefill'); if(f)f.style.width=(p.ageing?p.ageP*100:0)+'%';
   refreshSel();
   const w=S.players.find(q=>q.wonder&&q.wonderT>0);
@@ -2578,6 +2618,7 @@ function vrSelect(i,down){
     if(ids.length)NET.sendCmd({c:'move',ids,x:h.x,z:h.z,a:i===0?1:0,
       tid:ent&&ent.o!==S.me?ent.id:(ent&&ent.k!=='u'?ent.id:0)});
     S.fx.push({x:h.x,z:h.z,t:0.4});
+    taskDone(ids);
   }else if(ent){SELN.clear();SELN.add(ent.id);afterSelect();vrDrawPanel();}
 }
 function vrGrab(i,down){
