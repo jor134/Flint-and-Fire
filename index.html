@@ -496,7 +496,7 @@ const S={tick:0,players:[],ents:[],byId:new Map(),nextId:1,started:false,over:0,
 
 function mkPlayer(i,ai,diff){
   return {i,ai,diff:diff|0,col:PCOL[i],name:PNAME[i],
-    r:{f:200,w:200,g:100,s:100},pop:0,cap:0,capRaw:0,age:0,
+    r:{f:200,w:200,g:100,s:100},pop:0,cap:0,capRaw:0,popMax:POPMAX,age:0,
     ageP:0,ageing:0,alive:true,wonder:0,wonderT:0,
     ai_:{tPhase:0,nextAtk:90,wave:0,scoutDone:0,bd:0}};
 }
@@ -581,7 +581,7 @@ function recalcAllPop(){
     if(e.k==='b'){ if(e.done&&B[e.t].pop)p.capRaw+=B[e.t].pop; }
     else if(e.k==='u')p.pop+=e.st.pop;
   }
-  for(const p of S.players)p.cap=Math.min(p.capRaw,POPMAX);
+  for(const p of S.players)p.cap=Math.min(p.capRaw,p.popMax||POPMAX);
 }
 const recalcPop=()=>recalcAllPop();
 
@@ -637,7 +637,7 @@ function applyCmd(c,pi){
   case 'place':{
     const d=B[c.b]; if(!d||p.age<d.age)break;
     // a hut past the ceiling adds nothing, so don't take the wood for it
-    if(d.pop&&!d.tr&&!d.drop&&p.capRaw>=POPMAX){
+    if(d.pop&&!d.tr&&!d.drop&&p.capRaw>=(p.popMax||POPMAX)){
       if(pi===S.me){toast('Your tribe is already at its limit');SFX.deny();}
       break;}
     if(!canAfford(p,d.cost))break;
@@ -1033,7 +1033,7 @@ function aiTick(p){
     for(const tc of tcs)if(tc.q.length<2)applyCmd({c:'train',bid:tc.id,u:'vill'},p.i);
 
   /* housing */
-  if(p.cap-p.pop<5&&p.capRaw<POPMAX&&sites<2&&canAfford(p,B.house.cost)){
+  if(p.cap-p.pop<5&&p.capRaw<(p.popMax||POPMAX)&&sites<2&&canAfford(p,B.house.cost)){
     const s=aiSpot(p,'house',ctr.x,ctr.z,3,14);
     if(s){applyCmd({c:'place',b:'house',x:s.x,z:s.z,ids:pickBuilders(my.vill,1)},p.i);sites++;}
   }
@@ -1179,7 +1179,12 @@ function startGame(cfg){
   S.proj=[]; S.fx=[]; FIELDS.clear(); fieldStamp=0;
   genMap(cfg.seed,cfg.mapType);
   S.players=[];
-  for(let i=0;i<cfg.n;i++)S.players.push(mkPlayer(i,cfg.ai[i],cfg.diff));
+  for(let i=0;i<cfg.n;i++){
+    const p=mkPlayer(i,cfg.ai[i],cfg.diff);
+    const shared=(cfg.share&&cfg.share[i])||1;
+    p.popMax=POPMAX+Math.max(0,shared-1)*50;   // two commanders need more than one
+    S.players.push(p);
+  }
   const starts=findStarts(cfg.n);
   RND=mulberry32(cfg.seed^0x5f3a);
   scatter(1,starts);
@@ -1413,9 +1418,43 @@ NET.sendCmd=function(c){
   if(d&&d.readyState==='open')d.send(m);
   else if(NET.relay){NET.pending.push({t:'cmd',c,p:S.me});}
 };
+/* what our partners on the same tribe currently have selected */
+const PARTNER=new Map(); let PSEL=new Set(), lastShare=0;
+function rebuildPSEL(){
+  const cut=now()-6000; PSEL=new Set();
+  for(const [cid,v] of PARTNER){
+    if(v.t<cut){PARTNER.delete(cid);continue;}
+    for(const id of v.ids)PSEL.add(id);
+  }
+}
+function shareSelection(){
+  if(!NET.on)return;
+  const t=now(); if(t-lastShare<220)return; lastShare=t;
+  const m={t:'sel',cid:NET.host?'host':NET.cid,civ:S.me,ids:[...SELN].slice(0,80)};
+  if(NET.host)relaySel(m,'me'); else{
+    const d=NET.dcs.host; if(d&&d.readyState==='open')try{d.send(JSON.stringify(m));}catch(e){}
+  }
+}
+/* the host is the only one who knows who shares a tribe, so it does the fan-out
+   and never leaks a selection to the other side */
+function relaySel(m,from){
+  for(const s of NET.slots){
+    if(s.cid===from||s.cid==='me')continue;
+    if(s.civ!==m.civ)continue;
+    NET.send(m,s.cid);
+  }
+  if(m.civ===S.me&&m.cid!==(NET.host?'host':NET.cid)){
+    PARTNER.set(m.cid,{ids:m.ids,t:now()}); rebuildPSEL();
+  }
+}
 function onMsg(raw,from){
   let m; try{m=JSON.parse(raw);}catch(e){return;}
   if(m.t==='cmd'&&NET.host)applyCmd(m.c,m.p);
+  else if(m.t==='sel'){
+    if(NET.host)relaySel(m,from);
+    else if(m.civ===S.me&&m.cid!==NET.cid){PARTNER.set(m.cid,{ids:m.ids,t:now()});rebuildPSEL();}
+  }
+  else if(m.t==='lobby'&&!NET.host)renderLobby2(m.slots);
   else if(m.t==='snap'&&!NET.host)applySnap(m);
   else if(m.t==='start'&&!NET.host){NET.on=true;startGame(m.cfg);}
   else if(m.t==='end')endGame(m.w,m.y);
@@ -1480,9 +1519,9 @@ async function joinRoom(code){
   const iv=setInterval(async()=>{
     tries++;
     try{const v=await kv('get','ff:'+code+':ans:'+NET.cid);
-      if(v){clearInterval(iv);const {a,slot}=JSON.parse(v);
-        await pc.setRemoteDescription(a); S.me=slot; NET.on=true;
-        netmsg2('In the lobby as '+PNAME[slot],1);
+      if(v){clearInterval(iv);const {a,slot,civ}=JSON.parse(v);
+        await pc.setRemoteDescription(a); S.me=(civ===undefined?slot:civ); NET.on=true;
+        netmsg2('In the lobby as the '+PNAME[S.me]+' tribe',1);
         setTimeout(()=>{if(d.readyState!=='open'){NET.relay=true;netmsg2('Direct link failed — using relay',1);startRelayClient();}},9000);
       }}catch(e){}
     if(tries>25){clearInterval(iv);netmsg2('Host did not answer.',1);}
@@ -1686,7 +1725,7 @@ function unitPool(t,era){
 function buildPools(){
   for(const k in IM){world.remove(IM[k]);IM[k].geometry.dispose();delete IM[k];}
   for(const k in UPOOL)delete UPOOL[k];
-  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,POPMAX+40);
+  pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,POPMAX*2+40);
   pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,300);
   // resources
   pool('tr_t',new THREE.CylinderGeometry(0.14,0.2,1.1,5),0x5A4326,2400).geometry.translate(0,0.55,0);
@@ -1906,11 +1945,12 @@ function drawWorld(alpha){
       for(let i=0;i<parts.length;i++)
         pushI(parts[i],e.rx,y,e.rz,e.ang,1,IM[parts[i]].userData.tint?c:undefined);
       if(sel.has(e.id))pushI('ring',e.rx,y+0.06,e.rz,0,1.1,0xF0D080);
+      else if(PSEL.size&&PSEL.has(e.id))pushI('ring',e.rx,y+0.05,e.rz,0,1.28,0x7FD4FF);
     }else if(e.k==='r'){
       if(e.t==='tree'){pushI('tr_t',e.x,y,e.z,e.id*0.7,1);pushI('tr_f',e.x,y,e.z,e.id*0.7,0.8+((e.id*37)%20)/60);}
       else pushI(e.t==='bush'?'bush':e.t,e.x,y,e.z,e.id*0.9,0.85+((e.id*17)%20)/70);
-    }else if(e.k==='b'&&sel.has(e.id)){
-      pushI('ring',e.rx,y+0.06,e.rz,0,e.r*1.55,0xF0D080);
+    }else if(e.k==='b'&&(sel.has(e.id)||PSEL.has(e.id))){
+      pushI('ring',e.rx,y+0.06,e.rz,0,e.r*1.55,sel.has(e.id)?0xF0D080:0x7FD4FF);
     }
   }
   for(const p of S.proj)pushI('arrow',p.x,p.y,p.z,Math.atan2(p.vx||0,p.vz||1),1,0xF0E3C0);
@@ -2229,6 +2269,7 @@ function afterSelect(){
   selPrimary=null;
   for(const id of SELN){const e=S.byId.get(id);if(e){selPrimary=e;if(e.k==='b')break;}}
   if(selPrimary)SFX.select(selPrimary.k==='b'?'b':selPrimary.t);
+  shareSelection();
   refreshCmd(); refreshSel();
 }
 function issueOrder(sx,sy,attackMove){
@@ -2452,7 +2493,7 @@ function updateHUD(){
   $('rG').textContent=Math.floor(p.r.g); $('rS').textContent=Math.floor(p.r.s);
   $('rP').textContent=p.pop+'/'+p.cap;
   $('rPwrap').classList.toggle('full',p.pop>=p.cap);
-  $('rPl').textContent=p.capRaw>=POPMAX?'Tribe · max':'Tribe';
+  $('rPl').textContent=p.capRaw>=(p.popMax||POPMAX)?'Tribe · max':'Tribe';
   const f=$('agefill'); if(f)f.style.width=(p.ageing?p.ageP*100:0)+'%';
   refreshSel();
   const w=S.players.find(q=>q.wonder&&q.wonderT>0);
@@ -2710,6 +2751,7 @@ function loop(t){
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
+    if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
     if(frame%3===0){updateHUD();drawMM();}
     if(frame%12===0)refreshCmd();
@@ -2768,13 +2810,17 @@ $('menu').addEventListener('click',e=>{
       start:CFG.start,me:0,host:true,mode:'skirmish'});
   }
   else if(a==='startHost'){
-    const n=Math.max(2,NET.slots.length), ai=[];
-    for(let i=0;i<n;i++)ai.push(i>=NET.slots.length);
-    const cfg={seed:NET.cfg.seed,mapType:CFG.map,n,ai,diff:1,start:1,me:0,host:true,mode:'mp'};
+    const humanCivs=civCount();
+    const n=Math.min(4,Math.max(2,humanCivs+CFG.aiFoes)), ai=[];
+    for(let i=0;i<n;i++)ai.push(i>=humanCivs);
+    // how many people share each tribe, so the population ceiling can follow
+    const share=[]; for(let i=0;i<n;i++)share.push(NET.slots.filter(s=>s.civ===i).length||0);
+    const cfg={seed:NET.cfg.seed,mapType:CFG.map,n,ai,diff:1,start:1,me:0,host:true,
+               mode:'mp',share};
     NET.on=true;
     setTimeout(()=>{ // every client gets its own slot index, never a broadcast
       NET.slots.forEach(s=>{if(s.cid!=='me')NET.send({t:'start',
-        cfg:Object.assign({},cfg,{host:false,me:s.slot})},s.cid);});
+        cfg:Object.assign({},cfg,{host:false,me:s.civ})},s.cid);});
       startGame(cfg);
       if(NET.poll)clearInterval(NET.poll);
       NET.poll=setInterval(hostPoll,900);
