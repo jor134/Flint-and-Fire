@@ -198,7 +198,13 @@ canvas{display:block}
   <div class="mcol hidden" id="mHost">
     <div class="lbl" style="text-align:center">Room code — share with your tribe</div>
     <div id="code">----</div>
+    <div class="lbl" style="text-align:center">Tap a player to move them between tribes</div>
     <div id="lobby"></div>
+    <div class="opt slab"><span>New players join</span><div class="vals" data-set="joinMode">
+      <div class="v on" data-v="0">Same tribe</div><div class="v" data-v="1">Own tribe</div></div></div>
+    <div class="opt slab"><span>AI rivals</span><div class="vals" data-set="aiFoes">
+      <div class="v" data-v="0">0</div><div class="v on" data-v="1">1</div>
+      <div class="v" data-v="2">2</div><div class="v" data-v="3">3</div></div></div>
     <div id="netmsg"></div>
     <div class="big slab go" data-go="startHost">Start match</div>
     <div class="big slab" data-go="back">Back</div>
@@ -208,6 +214,7 @@ canvas{display:block}
     <div class="lbl" style="text-align:center">Enter room code</div>
     <input id="joincode" maxlength="4" autocomplete="off" autocapitalize="characters"
       style="width:100%;padding:13px;font-size:22px;letter-spacing:.32em;text-align:center;text-transform:uppercase;background:#0F0D0B;border:1px solid #4A3F33;color:var(--ochre);font-family:var(--ui);font-weight:700">
+    <div id="lobby2"></div>
     <div id="netmsg2"></div>
     <div class="big slab go" data-go="doJoin">Join</div>
     <div class="big slab" data-go="back">Back</div>
@@ -1176,7 +1183,7 @@ function findStarts(n){
   return out;
 }
 /* ============================================================ game setup = */
-const CFG={ai:2,diff:1,start:0,map:0};
+const CFG={ai:2,diff:1,start:0,map:0,joinMode:0,aiFoes:1};
 function startGame(cfg){
   S.cfg={seed:cfg.seed,mapType:cfg.mapType,n:cfg.n,ai:cfg.ai,diff:cfg.diff,
          start:cfg.start,me:cfg.me,host:cfg.host,mode:cfg.mode};
@@ -1396,7 +1403,21 @@ function applySnap(s){
 }
 
 const NET={on:false,host:false,code:'',cid:'',pcs:{},dcs:{},relay:false,slots:[],
-  lastSnap:0,pending:[],poll:null};
+  lastSnap:0,pending:[],poll:null,seq:0,lastSeq:-1,relayTimer:null};
+const RELAYQ={};
+/* Lobby and start traffic needs durable delivery: one overwritten key loses the
+   start handshake outright. Each client drains a numbered mailbox. */
+function relayTo(cid,m){
+  const q=(RELAYQ[cid]=(RELAYQ[cid]||[]).concat([Object.assign({},m,{_s:++NET.seq})]).slice(-16));
+  kv('set','ff:'+NET.code+':msg:'+cid,JSON.stringify(q),900).catch(()=>{});
+}
+function goRelay(){
+  if(NET.relay)return;
+  NET.relay=true;
+  if(NET.host){netmsg('Direct link failed — relaying through the key store');renderLobby();}
+  else{netmsg2('Direct link failed — relaying through the key store');
+       NET.pending.push({t:'hi'}); startRelayClient();}
+}
 async function kv(op,key,val,ttl){
   const r=await fetch('/api/kv',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({op,key,value:val,ttl:ttl||3600})});
@@ -1414,7 +1435,13 @@ NET.send=function(m,only){
   const j=JSON.stringify(m);
   for(const k in NET.dcs){ if(only&&k!==only)continue;
     const d=NET.dcs[k]; if(d&&d.readyState==='open'){try{d.send(j);}catch(e){}} }
-  if(NET.relay&&NET.host)kv('set','ff:'+NET.code+':snap',j,300).catch(()=>{});
+  if(!NET.host||!NET.relay)return;
+  if(m.t==='snap'){kv('set','ff:'+NET.code+':snap',j,300).catch(()=>{});return;}
+  const cids=only?[only]:NET.slots.filter(s=>s.cid!=='me').map(s=>s.cid);
+  for(const c of cids){
+    const d=NET.dcs[c];
+    if(!d||d.readyState!=='open')relayTo(c,m);   // only for links that never opened
+  }
 };
 NET.sendCmd=function(c){
   if(!NET.on)return applyCmd(c,S.me);
@@ -1464,10 +1491,16 @@ function onMsg(raw,from){
   else if(m.t==='snap'&&!NET.host)applySnap(m);
   else if(m.t==='start'&&!NET.host){NET.on=true;startGame(m.cfg);}
   else if(m.t==='end')endGame(m.w,m.y);
-  else if(m.t==='hi'&&NET.host){NET.slots.find(s=>s.cid===from)&&(NET.slots.find(s=>s.cid===from).ready=1);renderLobby();}
+  else if(m.t==='hi'&&NET.host){
+    const s=NET.slots.find(x=>x.cid===from), d=NET.dcs[from];
+    if(s)s.ready=(d&&d.readyState==='open')?1:2;   // 2 means reachable, but by relay
+    if(s&&s.ready===2)goRelay();
+    renderLobby(); pushLobby();
+  }
 }
 async function hostRoom(){
-  NET.host=true; NET.code=rc(); NET.slots=[{cid:'me',name:'You',slot:0,ready:1}];
+  NET.host=true; NET.code=rc();
+  NET.slots=[{cid:'me',name:'You',slot:0,civ:0,ready:1,since:Date.now(),ice:'host'}];
   document.getElementById('code').textContent=NET.code;
   const seed=Math.floor(Math.random()*1e9);
   NET.cfg={seed,mapType:CFG.map};
@@ -1478,26 +1511,38 @@ async function hostRoom(){
 }
 async function hostPoll(){
   let reqs=[]; try{const v=await kv('get','ff:'+NET.code+':req'); if(v)reqs=JSON.parse(v);}catch(e){return;}
+  // an abandoned join leaves a request behind under a fresh id; without this the
+  // host answers ghosts and the real player lands in a later slot
+  reqs=reqs.filter(r=>r&&r.cid&&Date.now()-(r.ts||0)<120000);
   for(const r of reqs){
     if(NET.slots.some(s=>s.cid===r.cid))continue;
     if(NET.slots.length>=4)continue;
     const slot=NET.slots.length;
-    NET.slots.push({cid:r.cid,name:'Player '+(slot+1),slot,ready:0});
+    const used=NET.slots.map(x=>x.civ);
+    let civ=0;
+    if(CFG.joinMode===1){ while(used.includes(civ)&&civ<3)civ++; }
+    NET.slots.push({cid:r.cid,name:'Player '+(slot+1),slot,civ,ready:0,since:Date.now(),ice:''});
     const pc=new RTCPeerConnection(RTC); NET.pcs[r.cid]=pc;
+    pc.oniceconnectionstatechange=()=>{
+      const s=NET.slots.find(x=>x.cid===r.cid); if(!s)return;
+      s.ice=pc.iceConnectionState; renderLobby();
+      if(s.ice==='failed')goRelay('ice');
+    };
     pc.ondatachannel=ev=>{const d=ev.channel;NET.dcs[r.cid]=d;
       d.onmessage=e=>onMsg(e.data,r.cid);
-      d.onopen=()=>{const s=NET.slots.find(x=>x.cid===r.cid);if(s)s.ready=1;renderLobby();};};
+      d.onopen=()=>{const s=NET.slots.find(x=>x.cid===r.cid);
+        if(s){s.ready=1;s.ice='connected';} renderLobby(); pushLobby();};};
     await pc.setRemoteDescription(JSON.parse(r.offer));
     const ans=await pc.createAnswer(); await pc.setLocalDescription(ans); await gather(pc);
-    await kv('set','ff:'+NET.code+':ans:'+r.cid,JSON.stringify({a:pc.localDescription,slot}),3600);
-    renderLobby();
+    await kv('set','ff:'+NET.code+':ans:'+r.cid,JSON.stringify({a:pc.localDescription,slot,civ}),3600);
+    renderLobby(); pushLobby();
   }
-  // if a peer link never opened, fall back to the key-store relay
-  if(S.started&&!NET.relay&&NET.slots.some(s=>s.cid!=='me'&&!s.ready)){
-    NET.relay=true; toast('Direct link failed — relaying through the key store');
-  }
-  // relay lane: pull queued client commands
-  if(NET.relay&&S.started){
+  // a link that never opens must fall back BEFORE the match starts, or the start
+  // handshake has nowhere to go and the lobby deadlocks
+  if(!NET.relay&&NET.slots.some(s=>s.cid!=='me'&&!s.ready&&Date.now()-(s.since||0)>9000))
+    goRelay();
+  // drain each client's command mailbox whenever the relay is live
+  if(NET.relay){
     for(const s of NET.slots){ if(s.cid==='me')continue;
       try{const v=await kv('get','ff:'+NET.code+':cmd:'+s.cid);
         if(v){await kv('set','ff:'+NET.code+':cmd:'+s.cid,'',60);
@@ -1528,25 +1573,75 @@ async function joinRoom(code){
       if(v){clearInterval(iv);const {a,slot,civ}=JSON.parse(v);
         await pc.setRemoteDescription(a); S.me=(civ===undefined?slot:civ); NET.on=true;
         netmsg2('In the lobby as the '+PNAME[S.me]+' tribe',1);
-        setTimeout(()=>{if(d.readyState!=='open'){NET.relay=true;netmsg2('Direct link failed — using relay',1);startRelayClient();}},9000);
+        renderLobby2([{name:'You',civ:S.me,ready:0,cid:NET.cid,ice:pc.iceConnectionState}]);
+        pc.oniceconnectionstatechange=()=>{
+          netmsg2('Link: '+pc.iceConnectionState);
+          if(pc.iceConnectionState==='failed')goRelay();
+        };
+        setTimeout(()=>{if(d.readyState!=='open')goRelay();},8000);
       }}catch(e){}
     if(tries>25){clearInterval(iv);netmsg2('Host did not answer.',1);}
   },1500);
 }
 function startRelayClient(){
-  setInterval(async()=>{
+  if(NET.relayTimer)return;
+  NET.relayTimer=setInterval(async()=>{
     if(!NET.relay)return;
-    try{const v=await kv('get','ff:'+NET.code+':snap'); if(v)onMsg(v,'host');}catch(e){}
+    try{const v=await kv('get','ff:'+NET.code+':msg:'+NET.cid);
+      if(v)for(const m of JSON.parse(v)){
+        const q=m._s|0;
+        if(q>NET.lastSeq){NET.lastSeq=q;onMsg(JSON.stringify(m),'host');}
+      }}catch(e){}
+    if(S.started){try{const v=await kv('get','ff:'+NET.code+':snap'); if(v)onMsg(v,'host');}catch(e){}}
     if(NET.pending.length){const b=NET.pending.splice(0,20);
       try{await kv('set','ff:'+NET.code+':cmd:'+NET.cid,JSON.stringify(b),120);}catch(e){}}
   },350);
 }
+function slotState(s){
+  if(s.cid==='me')return 'host';
+  if(s.ready===2)return 'relay';
+  if(s.ready===1)return 'ready';
+  return s.ice?s.ice:'linking…';
+}
+function lobbyRows(slots,tappable){
+  return slots.map((s,i)=>
+    `<div class="pl slab" data-row="${i}"${tappable?' style="cursor:pointer"':''}>
+     <span class="dot" style="background:${'#'+PCOL[s.civ|0].toString(16).padStart(6,'0')}"></span>
+     <span>${s.name}</span>
+     <span style="margin-left:auto;color:var(--bone-dim);font-size:9px">
+     ${PNAME[s.civ|0]} · ${slotState(s)}</span>
+     ${tappable&&s.cid!=='me'?`<span data-del="${i}" style="padding:0 4px;color:var(--ember)">✕</span>`:''}
+     </div>`).join('');
+}
+function civCount(){ return Math.max(0,...NET.slots.map(s=>s.civ|0))+1; }
 function renderLobby(){
   const el=document.getElementById('lobby'); if(!el)return;
-  el.innerHTML=NET.slots.map(s=>
-    `<div class="pl slab"><span class="dot" style="background:${'#'+PCOL[s.slot].toString(16).padStart(6,'0')}"></span>
-     <span>${s.name}</span><span style="margin-left:auto;color:var(--bone-dim);font-size:9px">
-     ${s.ready?'ready':'linking…'}</span></div>`).join('');
+  el.innerHTML=lobbyRows(NET.slots,true);
+  el.querySelectorAll('[data-row]').forEach(r=>r.onclick=()=>{
+    const s=NET.slots[+r.dataset.row]; if(!s)return;
+    s.civ=((s.civ|0)+1)%4; SFX.click(); renderLobby(); pushLobby();
+  });
+  el.querySelectorAll('[data-del]').forEach(x=>x.onclick=ev=>{
+    ev.stopPropagation();
+    const i=+x.dataset.del, s=NET.slots[i]; if(!s||s.cid==='me')return;
+    delete NET.dcs[s.cid]; delete NET.pcs[s.cid];
+    NET.slots.splice(i,1); SFX.click(); renderLobby(); pushLobby();
+  });
+  const shared=NET.slots.length-civCount();
+  netmsg(shared>0?civCount()+' tribes, '+shared+' sharing'
+                 :NET.slots.length+' player'+(NET.slots.length===1?'':'s')+', one tribe each');
+}
+function pushLobby(){
+  if(!NET.host)return;
+  NET.send({t:'lobby',slots:NET.slots.map(s=>
+    ({name:s.name,civ:s.civ|0,ready:s.ready,cid:s.cid,ice:s.ice}))});
+}
+function renderLobby2(slots){
+  const el=document.getElementById('lobby2'); if(!el)return;
+  el.innerHTML=lobbyRows(slots.map(s=>({...s,name:s.cid===NET.cid?'You':s.name})),false);
+  const mine=slots.find(s=>s.cid===NET.cid);
+  if(mine)netmsg2('You are the '+PNAME[mine.civ|0]+' tribe'+
+    (slots.filter(s=>(s.civ|0)===(mine.civ|0)).length>1?' — sharing with a partner':''));
 }
 function netmsg(t){const e=document.getElementById('netmsg');if(e)e.textContent=t;}
 function netmsg2(t){const e=document.getElementById('netmsg2');if(e)e.textContent=t;}
