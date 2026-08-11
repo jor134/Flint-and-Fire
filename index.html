@@ -839,7 +839,11 @@ function tickSim(){
     case 'build':{
       const b=S.byId.get(od.id);
       if(!b||b.dead){u.ord=null;break;}
-      if(b.done>=1&&b.hp>=b.mhp){u.ord=null;break;} // finished while we walked over
+      if(b.done>=1&&b.hp>=b.mhp){
+        // finished while we walked over — if it's a farm, get to work on it
+        if(b.t==='farm'&&b.o===u.o&&b.food>0)order(u,{t:'gather',id:b.id,res:'f'});
+        else u.ord=null;
+        break;}
       if(moveTo(u,b.x,b.z,contact(b)+0.55,dt)){
         u.ang=Math.atan2(b.x-u.x,b.z-u.z);
         if(b.done<1){
@@ -851,7 +855,9 @@ function tickSim(){
             if(b.o===S.me)toast(B[b.t].nm+' raised');
             if(b.t==='wonder'){S.players[b.o].wonder=1;S.players[b.o].wonderT=240;
               toast(PNAME[b.o]+' has raised a Wonder');}
-            u.ord=null;}
+            // whoever raised a farm stays on to work it
+            if(b.t==='farm'&&b.food>0)order(u,{t:'gather',id:b.id,res:'f'});
+            else u.ord=null;}
         }else if(b.hp<b.mhp){ b.hp=Math.min(b.mhp,b.hp+b.mhp*0.04*dt); }
         else u.ord=null;
       }
