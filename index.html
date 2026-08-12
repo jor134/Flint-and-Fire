@@ -555,6 +555,14 @@ function newBuild(t,o,x,z,done){
   stampBlock(e,1); return e;
 }
 function newRes(t,x,z){const d=RES[t];return add({k:'r',t,x,z,amt:d.amt,r:d.r,res:d.res});}
+/* Resource nodes are generated from the seed on every machine, so they never go
+   on the wire. Only their divergence does. */
+const RDIRTY=new Set(); const RDELTA=new Map();
+function resChanged(e){
+  const v=e.dead?0:Math.max(1,Math.round(e.amt));
+  if(RDELTA.get(e.id)===v)return;
+  RDELTA.set(e.id,v); RDIRTY.add(e.id);
+}
 
 const btiles=r=>Math.max(0,Math.round(r/TS-0.2));
 /* how close a unit can actually get: blocked tiles are wider than the visual radius */
@@ -859,9 +867,12 @@ function tickSim(){
         }
         const g=GATHER[od.res]*(S.players[u.o].ai?(1+0.12*S.players[u.o].diff):1)*dt;
         const take=Math.min(g,n.k==='r'?n.amt:n.food);
-        if(n.k==='r')n.amt-=take; else n.food-=take;
+        if(n.k==='r'){n.amt-=take; if(NET.on&&NET.host)resChanged(n);}
+        else n.food-=take;
         u.carry+=take; u.cres=od.res; u.ang=Math.atan2(n.x-u.x,n.z-u.z);
-        if((n.k==='r'?n.amt:n.food)<=0){ if(n.k==='r')del(n); else {stampBlock(n,0);del(n);} }
+        if((n.k==='r'?n.amt:n.food)<=0){
+          if(n.k==='r'){del(n); if(NET.on&&NET.host)resChanged(n);}
+          else {stampBlock(n,0);del(n);} }
       }
       break;}
     case 'ret':{
@@ -1223,6 +1234,7 @@ function startGame(cfg){
   S.seed=cfg.seed; S.mapType=cfg.mapType; S.me=cfg.me; S.host=cfg.host;
   S.mode=cfg.mode; S.over=0; S.tick=0; S.ents=[]; S.byId=new Map(); S.nextId=1;
   S.proj=[]; S.fx=[]; FIELDS.clear(); fieldStamp=0;
+  RDIRTY.clear(); RDELTA.clear();
   genMap(cfg.seed,cfg.mapType);
   S.players=[];
   for(let i=0;i<cfg.n;i++){
@@ -1401,7 +1413,7 @@ const KINDS=['u','b','r'];
 function encodeSnap(){
   const e=[];
   for(const x of S.ents){
-    if(x.dead)continue;
+    if(x.dead||x.k==='r')continue;   // resources come from the seed, not the wire
     e.push(x.id, TIDX[x.t], x.k==='u'?0:x.k==='b'?1:2, x.o===undefined?255:x.o,
       Math.round(x.x*8), Math.round(x.z*8), Math.round(x.hp), Math.round(x.mhp||1),
       Math.round((x.ang||0)*40), x.k==='b'?Math.round((x.done||0)*100):Math.round(x.carry||0));
@@ -1409,7 +1421,14 @@ function encodeSnap(){
   const p=S.players.map(q=>[q.r.f|0,q.r.w|0,q.r.g|0,q.r.s|0,q.pop,q.cap,q.age,
     Math.round(q.ageP*100),q.alive?1:0,Math.round(q.wonderT)]);
   const pr=[]; for(const q of S.proj)pr.push(Math.round(q.x*8),Math.round(q.y*8),Math.round(q.z*8));
-  return {t:'snap',k:S.tick,e,p,pr};
+  // resource divergence: just what changed, with a periodic full resend so a
+  // dropped snapshot cannot leave a client permanently out of step
+  const full=S.tick%200===0;
+  const rs=[];
+  const src=full?RDELTA.keys():RDIRTY;
+  for(const id of src)rs.push(id,RDELTA.get(id)||0);
+  RDIRTY.clear();
+  return {t:'snap',k:S.tick,e,p,pr,rs,rf:full?1:0};
 }
 function applySnap(s){
   S.tick=s.k;
@@ -1429,7 +1448,14 @@ function applySnap(s){
     if(x.k==='b')x.done=s.e[i+9]/100; else x.carry=s.e[i+9];
     if(x.rx===undefined){x.rx=nx;x.rz=nz;}
   }
-  for(const x of S.ents)if(!seen.has(x.id))x.dead=1;
+  // never cull resources: they are not in the snapshot by design
+  for(const x of S.ents)if(x.k!=='r'&&!seen.has(x.id))x.dead=1;
+  if(s.rs)for(let i=0;i<s.rs.length;i+=2){
+    const e=S.byId.get(s.rs[i]);
+    if(!e||e.k!=='r')continue;
+    const v=s.rs[i+1];
+    if(v<=0)e.dead=1; else e.amt=v;
+  }
   S.ents=S.ents.filter(x=>{if(x.dead)S.byId.delete(x.id);return !x.dead;});
   s.p.forEach((q,i)=>{const p=S.players[i]; if(!p)return;
     p.r={f:q[0],w:q[1],g:q[2],s:q[3]};p.pop=q[4];p.cap=q[5];
@@ -2962,7 +2988,12 @@ function loop(t){
       while(acc>=TICKMS&&n<5){tickSim();acc-=TICKMS;n++;}
       if(acc>TICKMS*6)acc=0;
     }
-    if(NET.on&&NET.host&&S.tick-lastSent>=3){lastSent=S.tick;NET.send(encodeSnap());}
+    if(NET.on&&NET.host){
+      // the relay lane is polled at ~3/sec, so writing at 6.7/sec just burns
+      // bandwidth and backs up the queue
+      const every=NET.relay?7:3;
+      if(S.tick-lastSent>=every){lastSent=S.tick;NET.send(encodeSnap());}
+    }
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
