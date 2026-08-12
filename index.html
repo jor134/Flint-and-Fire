@@ -81,6 +81,28 @@ canvas{display:block}
 .mbtn.on{color:var(--charcoal);background:var(--ochre);border-top-color:#F0C070}
 
 /* ---------- box select ---------- */
+#chatDot{display:none;width:6px;height:6px;border-radius:50%;background:var(--ember);
+  margin-left:5px;vertical-align:middle}
+#chatDot.on{display:inline-block}
+#chatlog{position:fixed;left:6px;bottom:calc(122px + env(safe-area-inset-bottom));
+  width:min(340px,60vw);z-index:22;pointer-events:none;display:flex;
+  flex-direction:column;gap:3px;align-items:flex-start}
+.cmsg{padding:5px 9px;font-size:11px;line-height:1.35;max-width:100%;
+  background:#14110EE8;border-left:2px solid var(--bone-dim);
+  animation:cfade .25s ease-out;word-break:break-word}
+.cmsg b{font-weight:700;margin-right:5px}
+.cmsg.sys{color:var(--bone-dim);font-style:italic;border-left-color:#4A3F33}
+@keyframes cfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+#chatbar{position:fixed;left:6px;right:6px;bottom:calc(6px + env(safe-area-inset-bottom));
+  z-index:45;display:flex;flex-direction:column;gap:5px}
+#chatbar .row{display:flex;gap:5px}
+#chatbar .quick{display:flex;gap:4px;flex-wrap:wrap}
+#chatbar .quick div{padding:6px 9px;font-size:10px;cursor:pointer;background:#2C2620;
+  border:1px solid #4A3F33;color:var(--bone)}
+#chatin{flex:1;min-width:0;padding:11px;font-size:14px;background:#0F0D0B;
+  border:1px solid #4A3F33;color:var(--bone);font-family:var(--ui)}
+#chatbar .send{padding:11px 13px;font-size:11px;cursor:pointer;text-transform:uppercase;
+  letter-spacing:.08em;display:flex;align-items:center}
 #box{position:fixed;border:1px solid var(--ochre);background:#D8A24A22;display:none;
   pointer-events:none;z-index:15}
 
@@ -156,6 +178,17 @@ canvas{display:block}
   <div class="mbtn slab" id="mAll">All army</div>
   <div class="mbtn slab" id="mIdle">Idle vill</div>
   <div class="mbtn slab" id="mSave">Save</div>
+  <div class="mbtn slab hidden" id="mChat">Chat<span id="chatDot"></span></div>
+</div>
+
+<div id="chatlog"></div>
+<div id="chatbar" class="hidden">
+  <div class="quick" id="quickRow"></div>
+  <div class="row">
+    <input id="chatin" maxlength="120" autocomplete="off" placeholder="Message your tribe…">
+    <div class="send slab" id="chatsend">Send</div>
+    <div class="send slab" id="chatclose">✕</div>
+  </div>
 </div>
 
 <div id="sel" class="slab">
@@ -1222,6 +1255,9 @@ function startGame(cfg){
   const c=S.ents.find(e=>e.o===S.me);
   if(c)centerOn(c.x,c.z);
   document.getElementById('menu').classList.add('hidden');
+  CHAT.log=[]; CHAT.unread=false; chatOpen(false);
+  $('mChat').classList.toggle('hidden',!NET.on);
+  if(NET.on)chatPush(0,'Press Chat to talk to the other tribes',1);
   refreshCmd(); renderAgeTrack();
   toast(cfg.start===0?'Nomad start — plant a Town Center':'Gather, build, advance');
 }
@@ -1488,6 +1524,10 @@ function onMsg(raw,from){
     else if(m.civ===S.me&&m.cid!==NET.cid){PARTNER.set(m.cid,{ids:m.ids,t:now()});rebuildPSEL();}
   }
   else if(m.t==='lobby'&&!NET.host)renderLobby2(m.slots);
+  else if(m.t==='chat'){
+    if(NET.host)relayChat(m,from);
+    if(m.cid!==(NET.host?'host':NET.cid))chatPush(m.civ,String(m.text||'').slice(0,120));
+  }
   else if(m.t==='snap'&&!NET.host)applySnap(m);
   else if(m.t==='start'&&!NET.host){NET.on=true;startGame(m.cfg);}
   else if(m.t==='end')endGame(m.w,m.y);
@@ -2487,6 +2527,8 @@ canvas.addEventListener('pointercancel',()=>{
   P.t.length=0;boxEl.style.display='none';P.box=false;P.multi=false;P.moved=0;});
 canvas.addEventListener('wheel',e=>{CAMS.tdist=clamp(CAMS.tdist*(1+Math.sign(e.deltaY)*0.12),12,140);},{passive:true});
 addEventListener('keydown',e=>{
+  if(e.key==='Enter'&&NET.on&&!CHAT.open){chatOpen(true);return;}
+  if(CHAT.open)return;   // typing must never drive the game
   if(e.key==='Shift')P.shift=true;
   if(e.key==='Escape')setGhost(null);
   if(e.key==='a'||e.key==='A')selectAllArmy();
@@ -2837,6 +2879,78 @@ if(navigator.xr)navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
   if(!ok)$('vrbtn').style.display='none';}).catch(()=>{$('vrbtn').style.display='none';});
 else $('vrbtn').style.display='none';
 
+/* =================================================================== chat = */
+const CHAT={log:[],open:false,unread:false};
+const QUICKS=['Attack now','Need help','On my way','Wait','Nice','Take gold','Falling back'];
+function chatName(civ){ return civ===S.me?'You':PNAME[civ]||'Someone'; }
+function chatPush(civ,text,sys){
+  CHAT.log.push({civ,text,sys,t:now()});
+  if(CHAT.log.length>40)CHAT.log.shift();
+  if(!CHAT.open&&!sys){CHAT.unread=true;$('chatDot').classList.add('on');}
+  if(!sys&&civ!==S.me)SFX.spawn();
+  drawChat();
+}
+function drawChat(){
+  const el=$('chatlog'); if(!el)return;
+  const cut=now()-(CHAT.open?600000:14000);
+  const rows=CHAT.log.filter(m=>m.t>cut).slice(CHAT.open?-9:-4);
+  el.innerHTML=rows.map(m=>{
+    const c='#'+(PCOL[m.civ]||0xA99C85).toString(16).padStart(6,'0');
+    return `<div class="cmsg${m.sys?' sys':''}" style="border-left-color:${c}">`+
+      (m.sys?'':`<b style="color:${c}">${esc(chatName(m.civ))}</b>`)+esc(m.text)+`</div>`;
+  }).join('');
+}
+const esc=t=>String(t).replace(/[&<>"']/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function chatSend(text){
+  text=String(text||'').trim().slice(0,120);
+  if(!text)return;
+  chatPush(S.me,text);
+  if(!NET.on)return;
+  const m={t:'chat',civ:S.me,cid:NET.host?'host':NET.cid,text};
+  if(NET.host)relayChat(m,'me');
+  else{
+    const d=NET.dcs.host;
+    if(d&&d.readyState==='open'){try{d.send(JSON.stringify(m));}catch(e){}}
+    else NET.pending.push(m);
+  }
+}
+/* the host fans out; everyone in the match sees it, so allies and rivals can talk */
+function relayChat(m,from){
+  for(const s of NET.slots){
+    if(s.cid===from||s.cid==='me')continue;
+    NET.send(m,s.cid);
+  }
+}
+function chatOpen(v){
+  CHAT.open=v;
+  $('chatbar').classList.toggle('hidden',!v);
+  if(v){CHAT.unread=false;$('chatDot').classList.remove('on');
+    const i=$('chatin'); if(i&&i.focus)try{i.focus();}catch(e){}}
+  drawChat();
+}
+function initChat(){
+  const q=$('quickRow');
+  if(q)q.innerHTML=QUICKS.map((t,i)=>`<div data-q="${i}">${esc(t)}</div>`).join('');
+  if(q&&q.querySelectorAll)q.querySelectorAll('[data-q]').forEach(d=>{
+    d.onclick=e=>{e.stopPropagation();chatSend(QUICKS[+d.dataset.q]);SFX.click();};});
+  const send=()=>{const i=$('chatin');if(!i)return;chatSend(i.value);i.value='';};
+  if($('chatsend'))$('chatsend').onclick=e=>{e.stopPropagation();send();};
+  if($('chatclose'))$('chatclose').onclick=e=>{e.stopPropagation();chatOpen(false);};
+  if($('mChat'))$('mChat').onclick=e=>{e.stopPropagation();chatOpen(!CHAT.open);SFX.click();};
+  const i=$('chatin');
+  if(i&&i.addEventListener){
+    i.addEventListener('keydown',e=>{
+      e.stopPropagation();
+      if(e.key==='Enter'){send();}
+      else if(e.key==='Escape')chatOpen(false);
+    });
+    i.addEventListener('pointerdown',e=>e.stopPropagation());
+  }
+  if($('chatbar')&&$('chatbar').addEventListener)
+    $('chatbar').addEventListener('pointerdown',e=>e.stopPropagation());
+}
+
 /* ================================================================== loop = */
 let acc=0,last=0,frame=0,lastSent=-1,lastAuto=0;
 function loop(t){
@@ -2852,6 +2966,7 @@ function loop(t){
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
+    if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
     if(frame%3===0){updateHUD();drawMM();}
@@ -2949,6 +3064,7 @@ function openSave(){
   $('svo').classList.remove('hidden');
 }
 $('mSave').onclick=openSave;
+initChat();
 $('svoClose').onclick=()=>$('svo').classList.add('hidden');
 $('svoCode').onclick=()=>{
   const d=serialize();
