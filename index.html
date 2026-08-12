@@ -130,6 +130,8 @@ canvas{display:block}
   background:#0F0D0B;border:1px solid #4A3F33;color:var(--ochre);font-family:var(--ui);font-weight:700}
 #netmsg{font-size:10px;color:var(--bone-dim);text-align:center;min-height:15px;letter-spacing:.06em}
 .hidden{display:none!important}
+.netlog{font-size:9px;line-height:1.5;color:#6E6152;max-height:78px;overflow:hidden;
+  padding:4px 6px;background:#0F0D0BAA;letter-spacing:.04em}
 #lobby .pl{display:flex;align-items:center;gap:8px;padding:8px 11px;font-size:11px}
 #lobby .dot{width:9px;height:9px;border-radius:50%}
 
@@ -239,6 +241,7 @@ canvas{display:block}
       <div class="v" data-v="0">0</div><div class="v on" data-v="1">1</div>
       <div class="v" data-v="2">2</div><div class="v" data-v="3">3</div></div></div>
     <div id="netmsg"></div>
+    <div id="netlog" class="netlog"></div>
     <div class="big slab go" data-go="startHost">Start match</div>
     <div class="big slab" data-go="back">Back</div>
   </div>
@@ -249,6 +252,7 @@ canvas{display:block}
       style="width:100%;padding:13px;font-size:22px;letter-spacing:.32em;text-align:center;text-transform:uppercase;background:#0F0D0B;border:1px solid #4A3F33;color:var(--ochre);font-family:var(--ui);font-weight:700">
     <div id="lobby2"></div>
     <div id="netmsg2"></div>
+    <div id="netlog2" class="netlog"></div>
     <div class="big slab go" data-go="doJoin">Join</div>
     <div class="big slab" data-go="back">Back</div>
   </div>
@@ -1473,12 +1477,22 @@ function relayTo(cid,m){
   const q=(RELAYQ[cid]=(RELAYQ[cid]||[]).concat([Object.assign({},m,{_s:++NET.seq})]).slice(-16));
   kv('set','ff:'+NET.code+':msg:'+cid,JSON.stringify(q),900).catch(()=>{});
 }
+/* The key store is the transport everyone can reach. WebRTC is an optimisation
+   layered on top: if it connects we use it for latency, and if it never does,
+   nothing has to notice or switch over. */
 function goRelay(){
   if(NET.relay)return;
   NET.relay=true;
-  if(NET.host){netmsg('Direct link failed — relaying through the key store');renderLobby();}
-  else{netmsg2('Direct link failed — relaying through the key store');
-       NET.pending.push({t:'hi'}); startRelayClient();}
+  nlog('key-store relay active');
+  if(NET.host)renderLobby();
+  else{ NET.pending.push({t:'hi'}); startRelayClient(); }
+}
+function linkState(){
+  const d=NET.host?null:NET.dcs.host;
+  if(!NET.host)return (d&&d.readyState==='open')?'direct':'relay';
+  const open=NET.slots.filter(s=>s.cid!=='me'&&NET.dcs[s.cid]&&NET.dcs[s.cid].readyState==='open').length;
+  const tot=NET.slots.length-1;
+  return tot?(open+'/'+tot+' direct'):'waiting';
 }
 async function kv(op,key,val,ttl){
   const r=await fetch('/api/kv',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1498,7 +1512,10 @@ NET.send=function(m,only){
   for(const k in NET.dcs){ if(only&&k!==only)continue;
     const d=NET.dcs[k]; if(d&&d.readyState==='open'){try{d.send(j);}catch(e){}} }
   if(!NET.host||!NET.relay)return;
-  if(m.t==='snap'){kv('set','ff:'+NET.code+':snap',j,300).catch(()=>{});return;}
+  if(m.t==='snap'){
+    const needy=NET.slots.some(s=>s.cid!=='me'&&!(NET.dcs[s.cid]&&NET.dcs[s.cid].readyState==='open'));
+    if(needy)kv('set','ff:'+NET.code+':snap',j,300).catch(()=>{});
+    return;}
   const cids=only?[only]:NET.slots.filter(s=>s.cid!=='me').map(s=>s.cid);
   for(const c of cids){
     const d=NET.dcs[c];
@@ -1559,8 +1576,8 @@ function onMsg(raw,from){
   else if(m.t==='end')endGame(m.w,m.y);
   else if(m.t==='hi'&&NET.host){
     const s=NET.slots.find(x=>x.cid===from), d=NET.dcs[from];
-    if(s)s.ready=(d&&d.readyState==='open')?1:2;   // 2 means reachable, but by relay
-    if(s&&s.ready===2)goRelay();
+    if(s){s.ready=(d&&d.readyState==='open')?1:2; nlog(s.name+' checked in ('+
+      (s.ready===1?'direct':'relay')+')');}
     renderLobby(); pushLobby();
   }
 }
@@ -1571,7 +1588,9 @@ async function hostRoom(){
   const seed=Math.floor(Math.random()*1e9);
   NET.cfg={seed,mapType:CFG.map};
   try{ await kv('set','ff:'+NET.code+':meta',JSON.stringify(NET.cfg),3600);
-       netmsg('Room open — waiting for players'); }
+       netmsg('Room open — waiting for players');
+       nlog('key store OK, room '+NET.code);
+       goRelay(); }
   catch(e){ netmsg('No key store reachable. Deploy api/kv.js, or play skirmish.'); return; }
   NET.poll=setInterval(hostPoll,1600); hostPoll();
 }
@@ -1605,8 +1624,7 @@ async function hostPoll(){
   }
   // a link that never opens must fall back BEFORE the match starts, or the start
   // handshake has nowhere to go and the lobby deadlocks
-  if(!NET.relay&&NET.slots.some(s=>s.cid!=='me'&&!s.ready&&Date.now()-(s.since||0)>9000))
-    goRelay();
+  if(!NET.relay)goRelay();
   // drain each client's command mailbox whenever the relay is live
   if(NET.relay){
     for(const s of NET.slots){ if(s.cid==='me')continue;
@@ -1619,8 +1637,12 @@ async function hostPoll(){
 async function joinRoom(code){
   NET.host=false; NET.code=code; NET.cid=rc()+rc();
   netmsg2('Looking for room…',1);
-  let meta; try{meta=await kv('get','ff:'+code+':meta');}catch(e){netmsg2('Key store unreachable.',1);return;}
-  if(!meta){netmsg2('No room with that code.',1);return;}
+  NETLOG.length=0; nlog('contacting key store…');
+  let meta;
+  try{meta=await kv('get','ff:'+code+':meta');}
+  catch(e){netmsg2('Key store unreachable.');nlog('FAILED: /api/kv — '+e.message);return;}
+  if(!meta){netmsg2('No room with that code.');nlog('no room under '+code);return;}
+  nlog('room found');
   NET.cfg=JSON.parse(meta);
   const pc=new RTCPeerConnection(RTC); NET.pcs.host=pc;
   const d=pc.createDataChannel('g',{ordered:true}); NET.dcs.host=d;
@@ -1631,22 +1653,26 @@ async function joinRoom(code){
   reqs=reqs.filter(r=>Date.now()-r.ts<120000);
   reqs.push({cid:NET.cid,ts:Date.now(),offer:JSON.stringify(pc.localDescription)});
   await kv('set','ff:'+code+':req',JSON.stringify(reqs),3600);
-  netmsg2('Knocking…',1);
+  nlog('join request posted'); netmsg2('Knocking…');
   let tries=0;
   const iv=setInterval(async()=>{
     tries++;
     try{const v=await kv('get','ff:'+code+':ans:'+NET.cid);
       if(v){clearInterval(iv);const {a,slot,civ}=JSON.parse(v);
-        await pc.setRemoteDescription(a); S.me=(civ===undefined?slot:civ); NET.on=true;
-        netmsg2('In the lobby as the '+PNAME[S.me]+' tribe',1);
-        renderLobby2([{name:'You',civ:S.me,ready:0,cid:NET.cid,ice:pc.iceConnectionState}]);
+        nlog('host answered');
+        S.me=(civ===undefined?slot:civ); NET.on=true;
+        goRelay();   // start talking immediately; do not wait on WebRTC
+        netmsg2('In the lobby as the '+PNAME[S.me]+' tribe');
+        renderLobby2([{name:'You',civ:S.me,ready:0,cid:NET.cid,ice:'relay'}]);
         pc.oniceconnectionstatechange=()=>{
-          netmsg2('Link: '+pc.iceConnectionState);
-          if(pc.iceConnectionState==='failed')goRelay();
+          const st=pc.iceConnectionState;
+          if(st==='connected'||st==='completed')nlog('direct link up');
+          else if(st==='failed')nlog('direct link failed (relay carries on)');
         };
-        setTimeout(()=>{if(d.readyState!=='open')goRelay();},8000);
+        try{ await pc.setRemoteDescription(a); }catch(e){ nlog('webrtc answer rejected'); }
       }}catch(e){}
-    if(tries>25){clearInterval(iv);netmsg2('Host did not answer.',1);}
+    if(tries>25){clearInterval(iv);netmsg2('Host did not answer.');
+      nlog('FAILED: no answer after 25 tries — is the host still on the lobby screen?');}
   },1500);
 }
 function startRelayClient(){
@@ -1665,9 +1691,9 @@ function startRelayClient(){
 }
 function slotState(s){
   if(s.cid==='me')return 'host';
-  if(s.ready===2)return 'relay';
-  if(s.ready===1)return 'ready';
-  return s.ice?s.ice:'linking…';
+  if(s.ready===2)return 'ready · relay';
+  if(s.ready===1)return 'ready · direct';
+  return 'waiting…';
 }
 function lobbyRows(slots,tappable){
   return slots.map((s,i)=>
@@ -1708,6 +1734,15 @@ function renderLobby2(slots){
   const mine=slots.find(s=>s.cid===NET.cid);
   if(mine)netmsg2('You are the '+PNAME[mine.civ|0]+' tribe'+
     (slots.filter(s=>(s.civ|0)===(mine.civ|0)).length>1?' — sharing with a partner':''));
+}
+const NETLOG=[];
+function nlog(t){
+  NETLOG.push(t);
+  if(NETLOG.length>9)NETLOG.shift();
+  for(const id of ['netlog','netlog2']){
+    const e=document.getElementById(id);
+    if(e)e.innerHTML=NETLOG.map(x=>'<div>'+esc(x)+'</div>').join('');
+  }
 }
 function netmsg(t){const e=document.getElementById('netmsg');if(e)e.textContent=t;}
 function netmsg2(t){const e=document.getElementById('netmsg2');if(e)e.textContent=t;}
