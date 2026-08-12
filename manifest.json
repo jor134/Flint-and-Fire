@@ -1,0 +1,19 @@
+{
+  "name": "Flint & Fire",
+  "short_name": "Flint & Fire",
+  "description": "A Stone Age real-time strategy game for phone, desktop and Quest 3.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0B0907",
+  "theme_color": "#14110E",
+  "categories": ["games", "strategy"],
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

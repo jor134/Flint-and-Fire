@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flint &amp; Fire">
+<meta name="theme-color" content="#14110E">
+<meta name="description" content="A Stone Age real-time strategy game for phone, desktop and Quest 3.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
 <title>FLINT &amp; FIRE — Stone Age RTS</title>
 <style>
 :root{
@@ -235,6 +242,7 @@ canvas{display:block}
       <div class="big slab" data-go="join">Join game</div>
     </div>
     <div class="big slab" data-go="help">How to play</div>
+    <div class="big slab hidden" data-go="install" id="btnInstall">Install as an app</div>
   </div>
 
   <div class="mcol hidden" id="mSkirm">
@@ -294,6 +302,15 @@ canvas{display:block}
       One finger drag — box select · Tap ground — move / attack-move<br>
       Two fingers — pan the world · Pinch — zoom · Twist — rotate<br>
       Double-tap a unit — select every unit of that type on screen<br><br>
+      <b style="color:var(--bone)">Desktop</b><br>
+      Left button — select, drag for a box · Right button — move / attack<br>
+      Arrows or W/D — scroll · Q, E — rotate · Wheel — zoom · Middle drag — pan<br>
+      A — all army · H — Town Center · . — idle villager · Space — centre on selection<br>
+      Ctrl+1…9 sets a control group, 1…9 recalls it · 1…9 also trigger build buttons<br><br>
+      <b style="color:var(--bone)">Gamepad</b><br>
+      Left stick — scroll · Right stick — cursor · A — select or place<br>
+      B — move · X — attack move · Y — idle villager · Back — all army<br>
+      LB/RB — rotate · Triggers — zoom · D-pad — pick a build button, stick click to use<br><br>
       <b style="color:var(--bone)">Quest 3</b><br>
       The map sits on a table in front of you. Point and pull the trigger to
       select; drag to sweep a box. Pull the ground with grip to slide the table,
@@ -2702,8 +2719,19 @@ function moveGhost(sx,sy){
 }
 
 function ptFromEv(e){const r=canvas.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top};}
+canvas.addEventListener('contextmenu',e=>{e.preventDefault();});
 canvas.addEventListener('pointerdown',e=>{
   if(!S.started||renderer.xr.isPresenting)return;
+  // desktop: right button issues orders, left button selects. Touch keeps the
+  // one-finger scheme it already had.
+  if(e.pointerType==='mouse'&&e.button===2){
+    const p=ptFromEv(e);
+    if(ghostType)setGhost(null); else issueOrder(p.x,p.y,e.shiftKey);
+    return;
+  }
+  if(e.pointerType==='mouse'&&e.button===1){ // middle drag pans
+    const p=ptFromEv(e); PCK.pan={x:p.x,y:p.y}; return;
+  }
   canvas.setPointerCapture(e.pointerId);
   P.t.push({id:e.pointerId,...ptFromEv(e)});
   if(P.t.length===1){
@@ -2718,6 +2746,17 @@ canvas.addEventListener('pointerdown',e=>{
 },{passive:false});
 canvas.addEventListener('pointermove',e=>{
   if(!S.started||renderer.xr.isPresenting)return;
+  if(e.pointerType==='mouse'){
+    const p=ptFromEv(e); PCK.mx=p.x; PCK.my=p.y;
+    if(PCK.pan){
+      const k=CAMS.dist*0.0022;
+      const dx=-(p.x-PCK.pan.x)*k, dy=(p.y-PCK.pan.y)*k;
+      CAMS.tx-=Math.cos(CAMS.yaw)*dx-Math.sin(CAMS.yaw)*dy;
+      CAMS.tz+=Math.sin(CAMS.yaw)*dx+Math.cos(CAMS.yaw)*dy;
+      PCK.pan={x:p.x,y:p.y}; return;
+    }
+    if(ghostType)moveGhost(p.x,p.y);
+  }
   const t=P.t.find(q=>q.id===e.pointerId); if(!t)return;
   const p=ptFromEv(e); t.x=p.x;t.y=p.y;
   if(P.t.length===1){
@@ -2750,6 +2789,7 @@ canvas.addEventListener('pointermove',e=>{
 },{passive:false});
 canvas.addEventListener('pointerup',e=>{
   if(!S.started)return;
+  if(e.pointerType==='mouse'&&(e.button===1||e.button===2)){PCK.pan=null;return;}
   const i=P.t.findIndex(q=>q.id===e.pointerId); if(i<0)return;
   const t=P.t[i]; P.t.splice(i,1);
   if(P.long){clearTimeout(P.long);P.long=0;}
@@ -2777,15 +2817,82 @@ canvas.addEventListener('pointerup',e=>{
 canvas.addEventListener('pointercancel',()=>{
   P.t.length=0;boxEl.style.display='none';P.box=false;P.multi=false;P.moved=0;});
 canvas.addEventListener('wheel',e=>{CAMS.tdist=clamp(CAMS.tdist*(1+Math.sign(e.deltaY)*0.12),12,140);},{passive:true});
+const PCK={keys:{},mx:0,my:0,pan:null,groups:{},edge:true};
 addEventListener('keydown',e=>{
   if(e.key==='Enter'&&NET.on&&!CHAT.open){chatOpen(true);return;}
   if(CHAT.open)return;   // typing must never drive the game
+  const tag=(e.target&&e.target.tagName)||'';
+  if(tag==='INPUT'||tag==='TEXTAREA')return;
+  PCK.keys[e.key.toLowerCase()]=true;
   if(e.key==='Shift')P.shift=true;
-  if(e.key==='Escape')setGhost(null);
-  if(e.key==='a'||e.key==='A')selectAllArmy();
-  if(e.key==='.')selectIdle();
+  if(e.key==='Escape'){setGhost(null);SELN.clear();afterSelect();}
+  if(!S.started)return;
+  const k=e.key.toLowerCase();
+  // control groups: ctrl+N to set, N to recall
+  if(/^[1-9]$/.test(k)){
+    if(e.ctrlKey||e.metaKey){
+      PCK.groups[k]=[...SELN];
+      toast('Group '+k+' set ('+SELN.size+')'); e.preventDefault(); return;
+    }
+    const g=PCK.groups[k];
+    if(g&&g.length){
+      SELN.clear();
+      for(const id of g)if(S.byId.get(id))SELN.add(id);
+      afterSelect();
+      const f=S.byId.get(g[0]); if(f&&e.shiftKey===false&&PCK.lastG===k)centerOn(f.x,f.z);
+      PCK.lastG=k;
+      return;
+    }
+    // otherwise treat the number as a command-panel shortcut
+    const b=CMDBTNS[+k-1];
+    if(b&&!b.off){b.act();refreshCmd();SFX.click();}
+    return;
+  }
+  if(k==='a')selectAllArmy();
+  else if(k==='.'||k==='`')selectIdle();
+  else if(k==='h'){
+    const tc=S.ents.find(x=>!x.dead&&x.k==='b'&&x.o===S.me&&x.t==='tc');
+    if(tc){SELN.clear();SELN.add(tc.id);afterSelect();centerOn(tc.x,tc.z);}
+  }
+  else if(k===' '){
+    const f=[...SELN].map(i=>S.byId.get(i)).find(Boolean);
+    if(f)centerOn(f.x,f.z);
+    e.preventDefault();
+  }
+  else if(k==='q')CAMS.yaw-=0.22;
+  else if(k==='e')CAMS.yaw+=0.22;
+  else if(k==='delete'||k==='backspace'){
+    const b=selPrimary;
+    if(b&&b.k==='b'&&b.o===S.me&&b.t!=='tc')NET.sendCmd({c:'raze',bid:b.id});
+  }
 });
-addEventListener('keyup',e=>{if(e.key==='Shift')P.shift=false;});
+addEventListener('keyup',e=>{
+  PCK.keys[e.key.toLowerCase()]=false;
+  if(e.key==='Shift')P.shift=false;
+});
+addEventListener('blur',()=>{PCK.keys={};PCK.pan=null;});
+/* WASD / arrows scroll the map, and the mouse at a screen edge does too */
+function pcCamera(sec){
+  if(CHAT.open||!S.started||renderer.xr.isPresenting)return;
+  const K=PCK.keys;
+  let ax=0,az=0;
+  if(K['w']||K['arrowup'])az-=1;
+  if(K['s']||K['arrowdown'])az+=1;
+  if(K['a']&&false)ax-=1;                 // 'a' is select-army; use arrows or d
+  if(K['arrowleft'])ax-=1;
+  if(K['arrowright']||K['d'])ax+=1;
+  if(K['arrowleft'])ax=-1;
+  if(PCK.edge&&!PCK.pan&&PCK.mx){
+    const m=26;
+    if(PCK.mx<m)ax-=1; else if(PCK.mx>innerWidth-m)ax+=1;
+    if(PCK.my<m+70)az-=1; else if(PCK.my>innerHeight-m)az+=1;
+  }
+  if(!ax&&!az)return;
+  const sp=CAMS.dist*1.5*sec, l=Math.hypot(ax,az)||1;
+  ax=ax/l*sp; az=az/l*sp;
+  CAMS.tx+=Math.cos(CAMS.yaw)*ax+Math.sin(CAMS.yaw)*az;
+  CAMS.tz+=-Math.sin(CAMS.yaw)*ax+Math.cos(CAMS.yaw)*az;
+}
 
 function selectAllArmy(){
   SELN.clear();
@@ -3217,6 +3324,89 @@ function linkWatch(){
   }
 }
 
+/* ================================================================ gamepad = */
+/* Sticks drive a cursor rather than the units directly: an RTS needs a pointer,
+   and this keeps every existing action reachable without a touchscreen. */
+const PAD={on:false,idx:-1,cx:0,cy:0,prev:{},hi:-1,dead:0.22};
+function padAxis(v){return Math.abs(v)<PAD.dead?0:(v-Math.sign(v)*PAD.dead)/(1-PAD.dead);}
+function padPressed(b,i){const was=PAD.prev[i];PAD.prev[i]=b;return b&&!was;}
+function padPoll(sec){
+  if(!navigator.getGamepads)return;
+  const pads=navigator.getGamepads();
+  let g=null;
+  for(const p of pads)if(p&&p.connected){g=p;break;}
+  if(!g){if(PAD.on){PAD.on=false;}return;}
+  if(!PAD.on){PAD.on=true;PAD.cx=innerWidth/2;PAD.cy=innerHeight/2;toast('Gamepad connected');}
+  if(!S.started||CHAT.open)return;
+  const ax=g.axes||[], bt=g.buttons||[];
+  const btn=i=>!!(bt[i]&&bt[i].pressed);
+
+  // left stick scrolls the map
+  const lx=padAxis(ax[0]||0), ly=padAxis(ax[1]||0);
+  if(lx||ly){
+    const sp=CAMS.dist*1.6*sec;
+    CAMS.tx+=(Math.cos(CAMS.yaw)*lx+Math.sin(CAMS.yaw)*ly)*sp;
+    CAMS.tz+=(-Math.sin(CAMS.yaw)*lx+Math.cos(CAMS.yaw)*ly)*sp;
+  }
+  // right stick moves the cursor; shoulders rotate; triggers zoom
+  const rx=padAxis(ax[2]||0), ry=padAxis(ax[3]||0);
+  PAD.cx=clamp(PAD.cx+rx*900*sec,0,innerWidth);
+  PAD.cy=clamp(PAD.cy+ry*900*sec,0,innerHeight);
+  if(btn(4))CAMS.yaw-=1.8*sec;
+  if(btn(5))CAMS.yaw+=1.8*sec;
+  const lt=(bt[6]&&bt[6].value)||0, rt=(bt[7]&&bt[7].value)||0;
+  if(lt>0.1)CAMS.tdist=clamp(CAMS.tdist*(1+1.4*sec*lt),12,140);
+  if(rt>0.1)CAMS.tdist=clamp(CAMS.tdist*(1-1.4*sec*rt),12,140);
+
+  if(padPressed(btn(0),0)){                    // A — select, or place a building
+    if(ghostType)tryPlace(PAD.cx,PAD.cy);
+    else{
+      const ent=pickEnt(PAD.cx,PAD.cy,44);
+      if(ent&&ent.o===S.me){SELN.clear();SELN.add(ent.id);afterSelect();}
+      else{SELN.clear();afterSelect();}
+    }
+  }
+  if(padPressed(btn(1),1))issueOrder(PAD.cx,PAD.cy,false);   // B — order
+  if(padPressed(btn(2),2))issueOrder(PAD.cx,PAD.cy,true);    // X — attack move
+  if(padPressed(btn(3),3))selectIdle();                      // Y — idle villager
+  if(padPressed(btn(8),8))selectAllArmy();                   // back/select
+  if(padPressed(btn(9),9)){                                  // start — pause menu
+    setGhost(null); SELN.clear(); afterSelect();
+  }
+  // d-pad walks the command panel, right stick click activates
+  if(padPressed(btn(14),14))PAD.hi=Math.max(0,PAD.hi-1);
+  if(padPressed(btn(15),15))PAD.hi=Math.min(CMDBTNS.length-1,PAD.hi+1);
+  if(padPressed(btn(12),12))PAD.hi=Math.max(0,PAD.hi-3);
+  if(padPressed(btn(13),13))PAD.hi=Math.min(CMDBTNS.length-1,PAD.hi+3);
+  if(PAD.hi>=CMDBTNS.length)PAD.hi=CMDBTNS.length-1;
+  if(padPressed(btn(11),11)||padPressed(btn(10),10)){
+    const b=CMDBTNS[PAD.hi];
+    if(b&&!b.off){b.act();refreshCmd();SFX.click();} else SFX.deny();
+  }
+}
+function padDraw(){
+  if(!PAD.on||!S.started)return;
+  const x=PAD.cx,y=PAD.cy;
+  hbX.strokeStyle='#14110E';hbX.lineWidth=4;
+  hbX.beginPath();hbX.arc(x,y,11,0,TAU);hbX.stroke();
+  hbX.strokeStyle=ghostType?'#E0552B':'#FFD400';hbX.lineWidth=2;
+  hbX.beginPath();hbX.arc(x,y,11,0,TAU);hbX.stroke();
+  hbX.beginPath();hbX.moveTo(x-17,y);hbX.lineTo(x-6,y);
+  hbX.moveTo(x+6,y);hbX.lineTo(x+17,y);
+  hbX.moveTo(x,y-17);hbX.lineTo(x,y-6);
+  hbX.moveTo(x,y+6);hbX.lineTo(x,y+17);hbX.stroke();
+  if(PAD.hi>=0&&CMDBTNS[PAD.hi]){
+    const el=$('cmd'), kids=el?el.children:null;
+    if(kids&&kids[PAD.hi]){
+      const r=kids[PAD.hi].getBoundingClientRect();
+      hbX.strokeStyle='#FFD400';hbX.lineWidth=2;
+      hbX.strokeRect(r.left-2,r.top-2,r.width+4,r.height+4);
+    }
+  }
+}
+addEventListener('gamepadconnected',()=>{PAD.on=true;});
+addEventListener('gamepaddisconnected',()=>{PAD.on=false;});
+
 /* =============================================================== tutorial = */
 const TUT={on:false,i:0,base:{},steps:[]};
 function tp(){return S.players[S.me];}
@@ -3351,11 +3541,12 @@ function loop(t){
     ageFX(sec);
     if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
     if(TUT.on&&frame%15===0)tutTick();
+    pcCamera(sec); padPoll(sec);
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
     if(frame%3===0){updateHUD();drawMM();}
     if(frame%12===0)refreshCmd();
-    drawBars();
+    drawBars(); padDraw();
     if(renderer.xr.isPresenting&&VR.c.length)vrFrame();
   }
   renderer.render(scene,cam);
@@ -3384,7 +3575,8 @@ document.querySelectorAll('[data-set]').forEach(g=>{
 $('menu').addEventListener('click',e=>{
   const g=e.target.closest('[data-go]'); if(!g)return;
   const a=g.dataset.go;
-  if(a==='tutorial')tutStart();
+  if(a==='install')doInstall();
+  else if(a==='tutorial')tutStart();
   else if(a==='skirmish')show('mSkirm');
   else if(a==='host'){show('mHost');hostRoom();}
   else if(a==='join')show('mJoin');
@@ -3471,8 +3663,43 @@ addEventListener('pagehide',panicSave);
 $('audbtn').onclick=e=>{e.stopPropagation();audWake();audMode((AUD.mode+3)%4);SFX.click();};
 addEventListener('pointerdown',audWake);
 
+/* ============================================================ install app = */
+let installPrompt=null;
+addEventListener('beforeinstallprompt',e=>{
+  e.preventDefault(); installPrompt=e;
+  const b=$('btnInstall'); if(b)b.classList.remove('hidden');
+});
+addEventListener('appinstalled',()=>{
+  installPrompt=null;
+  const b=$('btnInstall'); if(b)b.classList.add('hidden');
+  toast('Installed — launch it from your home screen');
+});
+function doInstall(){
+  if(installPrompt){
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(()=>{installPrompt=null;
+      const b=$('btnInstall'); if(b)b.classList.add('hidden');});
+    return;
+  }
+  // iOS gives no prompt event, so tell the person where the button is
+  const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  toast(ios?'Tap Share, then "Add to Home Screen"'
+           :'Use your browser menu — "Install" or "Add to Home screen"');
+}
+function initPWA(){
+  const standalone=matchMedia&&matchMedia('(display-mode: standalone)').matches;
+  const b=$('btnInstall');
+  if(b&&!standalone&&/iphone|ipad|ipod/i.test(navigator.userAgent))b.classList.remove('hidden');
+  if('serviceWorker' in navigator){
+    addEventListener('load',()=>{
+      navigator.serviceWorker.register('sw.js').catch(()=>{});
+    });
+  }
+}
+
 /* ================================================================== boot = */
 initGL();
+initPWA();
 audMode((()=>{try{const v=localStorage.getItem('flintfire:aud2');return v===null?3:+v;}catch(e){return 3;}})());
 if(!LS.ok()){const b=$('btnCont');if(b)b.classList.add('hidden');}
 refreshContinue();
