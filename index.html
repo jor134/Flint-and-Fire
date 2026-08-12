@@ -1421,7 +1421,8 @@ function encodeSnap(){
     if(x.dead||x.k==='r')continue;   // resources come from the seed, not the wire
     e.push(x.id, TIDX[x.t], x.k==='u'?0:x.k==='b'?1:2, x.o===undefined?255:x.o,
       Math.round(x.x*8), Math.round(x.z*8), Math.round(x.hp), Math.round(x.mhp||1),
-      Math.round((x.ang||0)*40), x.k==='b'?Math.round((x.done||0)*100):Math.round(x.carry||0));
+      Math.round((x.ang||0)*40), x.k==='b'?Math.round((x.done||0)*100):Math.round(x.carry||0),
+      Math.round((x.vx||0)*8), Math.round((x.vz||0)*8));
   }
   const p=S.players.map(q=>[q.r.f|0,q.r.w|0,q.r.g|0,q.r.s|0,q.pop,q.cap,q.age,
     Math.round(q.ageP*100),q.alive?1:0,Math.round(q.wonderT)]);
@@ -1438,7 +1439,7 @@ function encodeSnap(){
 function applySnap(s){
   S.tick=s.k;
   const seen=new Set();
-  for(let i=0;i<s.e.length;i+=10){
+  for(let i=0;i<s.e.length;i+=12){
     const id=s.e[i]; seen.add(id);
     let x=S.byId.get(id);
     const nx=s.e[i+4]/8, nz=s.e[i+5]/8;
@@ -1449,8 +1450,13 @@ function applySnap(s){
       if(x.k==='u')x.st=unitStat(x.t,0);
       S.ents.push(x); S.byId.set(id,x);
     }
+    const moved=(x.sx!==undefined)&&(Math.abs(nx-x.sx)+Math.abs(nz-x.sz)>0.05);
+    x.sx=nx; x.sz=nz;
     x.x=nx; x.z=nz; x.hp=s.e[i+6]; x.mhp=s.e[i+7]; x.ang=s.e[i+8]/40;
     if(x.k==='b')x.done=s.e[i+9]/100; else x.carry=s.e[i+9];
+    x.vx=(s.e[i+10]||0)/8; x.vz=(s.e[i+11]||0)/8; x.snapAt=now();
+    // the host has this unit moving, so our guess has served its purpose
+    if(x.pred&&moved)x.pred=null;
     if(x.rx===undefined){x.rx=nx;x.rz=nz;}
   }
   // never cull resources: they are not in the snapshot by design
@@ -1500,6 +1506,10 @@ function linkState(){
 /* Every call is bounded. Without this a single hung request over a mobile
    network parks the poll loop forever and the client simply stops. */
 const KVSTAT={ok:0,fail:0,ms:0,last:0,quota:false};
+/* Tuned for a paid key store, where request count is no longer the constraint.
+   Round-trip time is, so there is no point polling faster than the store can
+   answer — these are close to the floor. */
+const NETRATE={poll:90,drain:90};
 async function kvRaw(body,ms){
   const ac=(typeof AbortController!=='undefined')?new AbortController():null;
   const t=setTimeout(()=>{try{ac&&ac.abort();}catch(e){}},ms||5000);
@@ -1645,7 +1655,7 @@ async function hostRoom(){
        goRelay(); }
   catch(e){ netmsg('No key store reachable. Deploy api/kv.js, or play skirmish.'); return; }
   NET.poll=setInterval(hostPoll,1500); hostPoll();
-  NET.fast=setInterval(hostDrain,140);
+  NET.fast=setInterval(hostDrain,NETRATE.drain);
 }
 async function hostPoll(){
   let reqs=[]; try{const v=await kv('get','ff:'+NET.code+':req'); if(v)reqs=JSON.parse(v);}catch(e){return;}
@@ -1779,7 +1789,7 @@ function startRelayClient(){
       misses++; NET.backoff=Math.min(6,misses);
     }
     finally{ busy=false; }                      // MUST run, or the client stalls forever
-  },140);
+  },NETRATE.poll);
 }
 function slotState(s){
   if(s.cid==='me')return 'host';
@@ -2222,8 +2232,32 @@ function pushI(name,x,y,z,ang,sc,col){
   else m.instanceColor.setXYZ(m.count,1,1,1);
   m.count++;
 }
+/* A client cannot wait a round trip to see its own units react, so it starts
+   them walking immediately and lets the next snapshot correct the details.
+   The host stays authoritative: a guess is dropped the moment the real
+   position starts moving, or after PRED_MS if the order never landed. */
+const PRED_MS=1400;
+function predictMove(ids,x,z){
+  if(!NET.on||NET.host)return;
+  for(const id of ids){
+    const u=S.byId.get(id);
+    if(!u||u.k!=='u'||u.o!==S.me)continue;
+    u.pred={x,z,t:now()};
+  }
+}
+function stepPrediction(e,sec){
+  const p=e.pred;
+  if(!p)return false;
+  if(now()-p.t>PRED_MS){e.pred=null;return false;}
+  const dx=p.x-e.rx, dz=p.z-e.rz, d=Math.hypot(dx,dz);
+  if(d<0.6){e.pred=null;return false;}
+  const sp=(e.st&&e.st.spd||3)*sec;
+  e.rx+=dx/d*Math.min(sp,d); e.rz+=dz/d*Math.min(sp,d);
+  e.ang=Math.atan2(dx,dz);
+  return true;
+}
 let resDirty=true;
-let SMOOTH=0.32;
+let SMOOTH=0.32, RSEC=1/60, CLIENT=false;
 const MYU=[];
 const FX_LIFE=0.8;
 function ageFX(sec){
@@ -2240,9 +2274,18 @@ function drawWorld(alpha){
   for(const e of S.ents){
     if(e.dead)continue;
     if(e.rx===undefined){e.rx=e.x;e.rz=e.z;}
-    const k=SMOOTH;
-    if(Math.abs(e.x-e.rx)+Math.abs(e.z-e.rz)>14){e.rx=e.x;e.rz=e.z;}  // teleport, don't slide
-    else{e.rx=lerp(e.rx,e.x,k); e.rz=lerp(e.rz,e.z,k);}
+    if(e.pred&&stepPrediction(e,RSEC)){ /* our own guess drives it this frame */ }
+    else{
+      let tx=e.x, tz=e.z;
+      if(CLIENT&&e.k==='u'&&e.snapAt&&(e.vx||e.vz)){
+        // project along the last known velocity so motion stays continuous
+        // between snapshots instead of arriving in visible steps
+        const age=Math.min(0.35,(now()-e.snapAt)/1000);
+        tx+=e.vx*age; tz+=e.vz*age;
+      }
+      if(Math.abs(tx-e.rx)+Math.abs(tz-e.rz)>14){e.rx=tx;e.rz=tz;}   // teleport, don't slide
+      else{e.rx=lerp(e.rx,tx,SMOOTH); e.rz=lerp(e.rz,tz,SMOOTH);}
+    }
     const y=groundY(e.rx,e.rz);
     if(e.k==='u'){
       if(e.o===S.me)MYU.push(e);
@@ -2587,6 +2630,7 @@ function issueOrder(sx,sy,attackMove){
     return;
   }
   SFX.order(attackMove);
+  predictMove(ids,g?g.x:tgt.x,g?g.z:tgt.z);
   NET.sendCmd({c:'move',ids,x:g?g.x:tgt.x,z:g?g.z:tgt.z,a:attackMove?1:0,
     tid:tgt&&tgt.k!=='r'?(tgt.o!==S.me||tgt.k==='b'?tgt.id:0):(tgt?tgt.id:0)});
   S.fx.push({x:g?g.x:tgt.x,z:g?g.z:tgt.z,t:0.4,big:false});
@@ -3142,7 +3186,7 @@ function loop(t){
     if(NET.on&&NET.host){
       // the relay lane is polled at ~3/sec, so writing at 6.7/sec just burns
       // bandwidth and backs up the queue
-      const every=NET.relay?4:2;
+      const every=NET.relay?3:2;
       if(S.tick-lastSent>=every){lastSent=S.tick;NET.send(encodeSnap());}
     }
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
@@ -3152,7 +3196,8 @@ function loop(t){
     // glide between them rather than snap; the host is already continuous
     if(NET.on&&!NET.host&&frame%30===0)linkWatch();
     const sec=Math.min(0.25,dt/1000);
-    SMOOTH=1-Math.exp(-sec*(NET.on&&!NET.host?9:26));
+    RSEC=sec; CLIENT=NET.on&&!NET.host;
+    SMOOTH=1-Math.exp(-sec*(CLIENT?14:26));
     ageFX(sec);
     if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
@@ -3228,7 +3273,7 @@ $('menu').addEventListener('click',e=>{
       startGame(cfg);
       if(NET.poll)clearInterval(NET.poll);
       NET.poll=setInterval(hostPoll,2500);          // late joiners only
-      if(!NET.fast)NET.fast=setInterval(hostDrain,140);
+      if(!NET.fast)NET.fast=setInterval(hostDrain,NETRATE.drain);
     },250);
   }
   else if(a==='doJoin'){
