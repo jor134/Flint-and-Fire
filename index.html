@@ -9,7 +9,7 @@
 :root{
   --charcoal:#14110E; --charcoal2:#1E1A15; --stone:#2C2620; --stone-lit:#3A322A;
   --bone:#E6DAC4; --bone-dim:#A99C85; --ochre:#D8A24A; --ember:#E0552B;
-  --p0:#4FA3D9; --p1:#D94F4F; --p2:#63C46B; --p3:#E3C245;
+  --p0:#2E9BFF; --p1:#FF3B30; --p2:#14E0A0; --p3:#FFD400;
   --ui: 'Trebuchet MS','Segoe UI',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -103,6 +103,18 @@ canvas{display:block}
   border:1px solid #4A3F33;color:var(--bone);font-family:var(--ui)}
 #chatbar .send{padding:11px 13px;font-size:11px;cursor:pointer;text-transform:uppercase;
   letter-spacing:.08em;display:flex;align-items:center}
+#tut{position:fixed;left:50%;transform:translateX(-50%);
+  top:calc(74px + env(safe-area-inset-top));width:min(330px,86vw);z-index:24;padding:9px 11px}
+#tut .thead{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+#tut .thead span#tutN{font-size:9px;color:var(--ochre);letter-spacing:.1em;font-weight:700}
+#tut .thead b{font-size:12px;letter-spacing:.04em;flex:1}
+#tut .thead span#tutX{font-size:12px;color:var(--bone-dim);cursor:pointer;padding:0 3px}
+#tutBody{font-size:11px;line-height:1.45;color:var(--bone-dim)}
+#tutBody em{color:var(--ochre);font-style:normal;font-weight:700}
+#tut .trow{display:flex;gap:6px;margin-top:6px}
+#tut .tbtn{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);
+  cursor:pointer;padding:4px 7px;border:1px solid #4A3F33}
+#tut.done{border-top-color:var(--p2)}
 #box{position:fixed;border:1px solid var(--ochre);background:#D8A24A22;display:none;
   pointer-events:none;z-index:15}
 
@@ -193,6 +205,13 @@ canvas{display:block}
   </div>
 </div>
 
+<div id="tut" class="slab hidden">
+  <div class="thead"><span id="tutN">1/9</span><b id="tutT">—</b>
+    <span id="tutX">✕</span></div>
+  <div id="tutBody"></div>
+  <div class="trow"><div class="tbtn" id="tutSkip">Skip this step</div></div>
+</div>
+
 <div id="sel" class="slab">
   <div class="title" id="selT">—</div>
   <div class="sub" id="selS"></div>
@@ -208,6 +227,7 @@ canvas{display:block}
   <div class="tag">Eight ages · one continent · no turns</div>
   <div class="mcol" id="mMain">
     <div class="big slab go hidden" data-go="continue" id="btnCont">Continue</div>
+    <div class="big slab" data-go="tutorial" id="btnTut">Learn to play</div>
     <div class="big slab go" data-go="skirmish">Skirmish</div>
     <div class="big slab" data-go="load">Load a saved game</div>
     <div class="mrow">
@@ -373,8 +393,12 @@ const RES={
 };
 const GATHER={f:0.62,w:0.60,g:0.52,s:0.50}, CARRY=18;
 const POPMAX=100;   // hard ceiling per player; instance pools are sized off this
-const PCOL=[0x4FA3D9,0xD94F4F,0x63C46B,0xE3C245];
-const PNAME=['Blue','Red','Green','Amber'];
+/* The old green sat almost exactly on the grass hue, so it vanished. Jade is
+   far enough round the wheel to read against both grass and dirt, and every
+   colour is pushed up in saturation and value to survive the toon shading. */
+const PCOL=[0x2E9BFF,0xFF3B30,0x14E0A0,0xFFD400];
+const PNAME=['Blue','Red','Jade','Amber'];
+const PDARK=[0x0A4E8C,0x8C1A14,0x067A56,0x8C6300];   // shadow side of each
 
 function tier(a){return {hp:1+0.17*a, atk:1+0.19*a};}
 function unitStat(type,age){
@@ -1142,7 +1166,8 @@ function aiTick(p){
   /* waves */
   A.nextAtk-=dt;
   const thresh=Math.min([10,8,6][dif]+A.wave,18);
-  if(my.army.length>=thresh&&A.nextAtk<=0){
+  const peaceful=S.tutPeace&&S.tick<S.tutPeace;
+  if(!peaceful&&my.army.length>=thresh&&A.nextAtk<=0){
     let tgt=null,bd=1e9;
     for(const e of S.ents){
       if(e.dead||e.o===undefined||e.o===p.i||!S.players[e.o]||!S.players[e.o].alive)continue;
@@ -1236,6 +1261,7 @@ const CFG={ai:2,diff:1,start:0,map:0,joinMode:0,aiFoes:1};
 function startGame(cfg){
   S.cfg={seed:cfg.seed,mapType:cfg.mapType,n:cfg.n,ai:cfg.ai,diff:cfg.diff,
          start:cfg.start,me:cfg.me,host:cfg.host,mode:cfg.mode};
+  S.tutPeace=0;
   S.seed=cfg.seed; S.mapType=cfg.mapType; S.me=cfg.me; S.host=cfg.host;
   S.mode=cfg.mode; S.over=0; S.tick=0; S.ents=[]; S.byId=new Map(); S.nextId=1;
   S.proj=[]; S.fx=[]; FIELDS.clear(); fieldStamp=0;
@@ -1272,6 +1298,7 @@ function startGame(cfg){
   const c=S.ents.find(e=>e.o===S.me);
   if(c)centerOn(c.x,c.z);
   document.getElementById('menu').classList.add('hidden');
+  if(!cfg.tutorial){TUT.on=false;$('tut').classList.add('hidden');}
   CHAT.log=[]; CHAT.unread=false; chatOpen(false);
   $('mChat').classList.toggle('hidden',!NET.on);
   if(NET.on)chatPush(0,'Press Chat to talk to the other tribes',1);
@@ -1885,8 +1912,9 @@ function buildTerrain(){
   const seg=NT, g=new THREE.PlaneGeometry(WORLD,WORLD,seg,seg);
   g.rotateX(-Math.PI/2);
   const pos=g.attributes.position, col=new Float32Array(pos.count*3);
-  const C={sand:[.85,.77,.55],grass:[.42,.56,.28],grass2:[.34,.47,.23],
-           rock:[.46,.44,.40],snow:[.86,.86,.82],dirt:[.50,.41,.28]};
+  // pulled down in chroma: the terrain is a backdrop, not a competitor
+  const C={sand:[.72,.67,.58],grass:[.36,.46,.26],grass2:[.30,.40,.22],
+           rock:[.42,.41,.38],snow:[.80,.80,.78],dirt:[.44,.37,.27]};
   for(let i=0;i<pos.count;i++){
     const xi=i%(seg+1), zi=(i/(seg+1))|0;
     let h=H[zi*(NT+1)+xi];
@@ -2030,6 +2058,13 @@ function buildPools(){
   for(const k in IM){world.remove(IM[k]);IM[k].geometry.dispose();delete IM[k];}
   for(const k in UPOOL)delete UPOOL[k];
   pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,POPMAX*2+40);
+  /* a flat coloured disc under each unit — at tabletop and phone zoom this
+     reads whose army it is far faster than the tint on the body does */
+  const disc=new THREE.CircleGeometry(0.52,12); disc.rotateX(-Math.PI/2);
+  const dm=pool('disc',disc,0xffffff,UPCAP);
+  dm.material.transparent=true; dm.material.opacity=0.92;
+  dm.material.polygonOffset=true; dm.material.polygonOffsetFactor=-2;
+  dm.material.polygonOffsetUnits=-2; dm.material.depthWrite=false;
   pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,300);
   // resources
   pool('tr_t',new THREE.CylinderGeometry(0.14,0.2,1.1,5),0x5A4326,2400).geometry.translate(0,0.55,0);
@@ -2054,6 +2089,11 @@ function mkBuilding(t,colHex,era){
     m.position.set(x,y,z); if(ry)m.rotation.y=ry; g.add(m); return m;};
 
   /* era vocabulary ------------------------------------------------------- */
+  // a skirt in the owner's colour, so a building reads as yours from any angle
+  const skirt=(w,dp)=>{
+    const m=add(new THREE.BoxGeometry(w*1.06,0.26,(dp||w)*1.06),roofM,0,0.13,0);
+    return m;
+  };
   const body=(w,h,dp)=> era===0
     ? add(new THREE.CylinderGeometry(w*0.50,w*0.60,h,6),wall,0,h/2,0,0.4)
     : add(new THREE.BoxGeometry(w,h,dp),wall,0,h/2,0);
@@ -2081,7 +2121,7 @@ function mkBuilding(t,colHex,era){
 
   switch(t){
   case 'tc':
-    body(r*1.7,1.9,r*1.7); roof(r*1.5,1.6,2.6);
+    skirt(r*1.75,r*1.75); body(r*1.7,1.9,r*1.7); roof(r*1.5,1.6,2.6);
     if(era===0){ tusks(0.95,r*1.05,1.15); bones(-r*1.0,3); }
     if(era===1){ columns(r*0.95,2.0); }
     if(era>=2){ add(new THREE.CylinderGeometry(0.16,0.16,3.4,5),dark,r*0.85,1.7,r*0.85);
@@ -2117,7 +2157,7 @@ function mkBuilding(t,colHex,era){
     if(era>=2)add(new THREE.BoxGeometry(0.6,0.6,0.6),trim,-0.85,0.3,0.85,0.7);
     break;
   case 'barracks': case 'range': case 'stable': case 'siegew':
-    body(r*1.8,1.4,r*1.5);
+    skirt(r*1.85,r*1.55); body(r*1.8,1.4,r*1.5);
     if(era===0) roof(r*1.15,1.35,1.45);
     else { add(new THREE.BoxGeometry(r*1.95,0.3,r*1.7),roofM,0,1.55,0);
            if(era>=2)add(new THREE.BoxGeometry(r*2.05,0.12,r*1.8),trim,0,1.72,0); }
@@ -2131,6 +2171,7 @@ function mkBuilding(t,colHex,era){
     if(era===3)banner(r*0.85,-r*0.7,1.5,1.5);
     break;
   case 'tower':
+    add(new THREE.CylinderGeometry(1.02,1.02,0.26,era===0?6:7),roofM,0,0.13,0);
     add(new THREE.CylinderGeometry(0.75,0.95,3.6,era===0?6:7),wall,0,1.8,0);
     if(era===0){ add(new THREE.ConeGeometry(1.0,1.3,5),roofM,0,4.2,0,0.4); tusks(3.4,0.8,0.7); }
     else { add(new THREE.CylinderGeometry(1.05,0.85,0.5,7),roofM,0,3.8,0);
@@ -2138,6 +2179,7 @@ function mkBuilding(t,colHex,era){
     if(era>=2)add(new THREE.BoxGeometry(0.3,0.9,0.3),dark,0,1.4,0.95);
     break;
   case 'fort':
+    skirt(r*1.95,r*1.95);
     add(new THREE.BoxGeometry(r*1.9,2.6,r*1.9),wall,0,1.3,0);
     add(new THREE.BoxGeometry(r*2.1,0.4,r*2.1),roofM,0,2.7,0);
     for(const sd of [[1,1],[1,-1],[-1,1],[-1,-1]]){
@@ -2290,6 +2332,7 @@ function drawWorld(alpha){
     if(e.k==='u'){
       if(e.o===S.me)MYU.push(e);
       const c=PCOL[e.o], parts=unitPool(e.t,eraOf(e.o));
+      pushI('disc',e.rx,y+0.045,e.rz,0,e.t==='cav'||e.t==='sie'?1.35:1,c);
       for(let i=0;i<parts.length;i++)
         pushI(parts[i],e.rx,y,e.rz,e.ang,1,IM[parts[i]].userData.tint?c:undefined);
       if(sel.has(e.id))pushI('ring',e.rx,y+0.06,e.rz,0,1.1,0xF0D080);
@@ -2897,7 +2940,9 @@ function drawMM(){
     if(e.k==='r'){mmX.fillStyle=e.t==='gold'?'#D8A24A':e.t==='rock'?'#9A968C':e.t==='bush'?'#7FBF4F':'#2F5D2A';
       mmX.fillRect(x,z,1,1);continue;}
     mmX.fillStyle='#'+PCOL[e.o].toString(16).padStart(6,'0');
-    const s=e.k==='b'?3:2;
+    const s=e.k==='b'?4:2.5;
+    mmX.fillStyle='#0B0907';mmX.fillRect(x-s/2-0.5,z-s/2-0.5,s+1,s+1);   // dark halo
+    mmX.fillStyle='#'+PCOL[e.o].toString(16).padStart(6,'0');
     mmX.fillRect(x-s/2,z-s/2,s,s);
   }
   mmX.strokeStyle='#E6DAC4AA';mmX.lineWidth=1;
@@ -3172,6 +3217,111 @@ function linkWatch(){
   }
 }
 
+/* =============================================================== tutorial = */
+const TUT={on:false,i:0,base:{},steps:[]};
+function tp(){return S.players[S.me];}
+function countU(t){let n=0;for(const e of S.ents)if(!e.dead&&e.k==='u'&&e.o===S.me&&
+  (t?e.t===t:e.t!=='vill'))n++;return n;}
+function hasB(t,doneOnly){for(const e of S.ents)if(!e.dead&&e.k==='b'&&e.o===S.me&&e.t===t&&
+  (!doneOnly||e.done>=1))return true;return false;}
+function selHas(t){for(const id of SELN){const e=S.byId.get(id);
+  if(e&&e.k==='u'&&e.o===S.me&&e.t===t)return true;}return false;}
+
+TUT.steps=[
+ {t:'Pick a worker',
+  b:'Your <em>villagers</em> do every job. Tap one to select it — a gold ring appears underneath.',
+  enter(){}, check(){return selHas('vill');}},
+
+ {t:'Chop some wood',
+  b:'With a villager selected, tap a <em>tree</em>. It will chop and carry the wood back to your Town Center by itself. Wood builds almost everything.',
+  enter(){TUT.base.w=tp().r.w;}, check(){return tp().r.w>=TUT.base.w+40;}},
+
+ {t:'Bring in food',
+  b:'Now send villagers to the <em>berry bushes</em>. Food feeds new villagers and pays for the next age. Select several at once by dragging a box around them.',
+  enter(){TUT.base.f=tp().r.f;}, check(){return tp().r.f>=TUT.base.f+40;}},
+
+ {t:'Build a hut',
+  b:'Select a villager, tap <em>Hut</em> on the right, then tap the ground to place it. Every hut raises how many people your tribe can hold.',
+  enter(){}, check(){return hasB('house',1);}},
+
+ {t:'Grow the tribe',
+  b:'Tap your <em>Town Center</em>, then tap <em>Villager</em> to train more workers. More villagers means everything else happens faster.',
+  enter(){TUT.base.v=countU('vill');}, check(){return countU('vill')>=TUT.base.v+2;}},
+
+ {t:'Plant a farm',
+  b:'Berries run out. Select a villager, choose <em>Farm</em>, and place it near your Town Center. Whoever builds it stays on to work it, and it keeps producing.',
+  enter(){}, check(){return hasB('farm',1);}},
+
+ {t:'Raise a Barracks',
+  b:'You will need soldiers. Select a villager and build a <em>Barracks</em>. Two or three villagers on one site finish it much faster.',
+  enter(){}, check(){return hasB('barracks',1);}},
+
+ {t:'Train a fighter',
+  b:'Tap the Barracks and train a <em>Clubman</em>. Use <em>All army</em> at the bottom left to grab every soldier at once.',
+  enter(){}, check(){return countU()>=1;}},
+
+ {t:'Advance an age',
+  b:'When you have the food, tap your Town Center and choose <em>Copper Age</em>. Each age makes your people tougher and unlocks new buildings — there are eight in all.',
+  enter(){}, check(){return tp().age>=1;}},
+];
+
+function tutStart(){
+  TUT.on=true; TUT.i=0; TUT.base={};
+  startGame({seed:Math.floor(Math.random()*1e9),mapType:1,n:2,ai:[false,true],
+    diff:0,start:1,me:0,host:true,mode:'skirmish',tutorial:1});
+  S.tutPeace=S.tick+20*60*8;      // eight quiet minutes before the AI attacks
+  const st=TUT.steps[0]; if(st.enter)st.enter();
+  tutDraw();
+}
+function tutExit(){
+  TUT.on=false;
+  $('tut').classList.add('hidden');
+  try{localStorage.setItem('flintfire:tutdone','1');}catch(e){}
+}
+function tutAdvance(){
+  TUT.i++;
+  if(TUT.i>=TUT.steps.length){
+    $('tutN').textContent='✓';
+    $('tutT').textContent='You know enough to play';
+    $('tutBody').innerHTML='That is the whole loop: gather, build, grow, advance. '+
+      'The match carries on from here — there is a rival on this map who will '+
+      'come looking for you eventually.';
+    $('tut').classList.add('done');
+    $('tutSkip').textContent='Close';
+    SFX.win();
+    try{localStorage.setItem('flintfire:tutdone','1');}catch(e){}
+    TUT.on=false;
+    return;
+  }
+  const st=TUT.steps[TUT.i];
+  if(st.enter)st.enter();
+  SFX.done(0,0);
+  tutDraw();
+}
+function tutDraw(){
+  const st=TUT.steps[TUT.i]; if(!st)return;
+  $('tut').classList.remove('hidden');
+  $('tutN').textContent=(TUT.i+1)+'/'+TUT.steps.length;
+  $('tutT').textContent=st.t;
+  $('tutBody').innerHTML=st.b;
+}
+function tutTick(){
+  if(!TUT.on||!S.started)return;
+  const st=TUT.steps[TUT.i]; if(!st)return;
+  let done=false;
+  try{done=!!st.check();}catch(e){done=false;}
+  if(done)tutAdvance();
+}
+function initTut(){
+  if($('tutX'))$('tutX').onclick=e=>{e.stopPropagation();tutExit();};
+  if($('tutSkip'))$('tutSkip').onclick=e=>{e.stopPropagation();
+    if(!TUT.on){tutExit();return;}
+    SFX.click(); tutAdvance();};
+  // a first-time player should not have to go looking for it
+  try{ if(!localStorage.getItem('flintfire:tutdone')){
+    const b=$('btnTut'); if(b)b.classList.add('go'); } }catch(e){}
+}
+
 /* ================================================================== loop = */
 let acc=0,last=0,frame=0,lastSent=-1,lastAuto=0;
 function loop(t){
@@ -3200,6 +3350,7 @@ function loop(t){
     SMOOTH=1-Math.exp(-sec*(CLIENT?14:26));
     ageFX(sec);
     if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
+    if(TUT.on&&frame%15===0)tutTick();
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
     if(frame%3===0){updateHUD();drawMM();}
@@ -3233,7 +3384,8 @@ document.querySelectorAll('[data-set]').forEach(g=>{
 $('menu').addEventListener('click',e=>{
   const g=e.target.closest('[data-go]'); if(!g)return;
   const a=g.dataset.go;
-  if(a==='skirmish')show('mSkirm');
+  if(a==='tutorial')tutStart();
+  else if(a==='skirmish')show('mSkirm');
   else if(a==='host'){show('mHost');hostRoom();}
   else if(a==='join')show('mJoin');
   else if(a==='help')show('mHelp');
@@ -3299,6 +3451,7 @@ function openSave(){
 }
 $('mSave').onclick=openSave;
 initChat();
+initTut();
 $('svoClose').onclick=()=>$('svo').classList.add('hidden');
 $('svoCode').onclick=()=>{
   const d=serialize();
