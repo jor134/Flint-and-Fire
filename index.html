@@ -1497,11 +1497,43 @@ function linkState(){
   const tot=NET.slots.length-1;
   return tot?(open+'/'+tot+' direct'):'waiting';
 }
+/* Every call is bounded. Without this a single hung request over a mobile
+   network parks the poll loop forever and the client simply stops. */
+const KVSTAT={ok:0,fail:0,ms:0,last:0,quota:false};
+async function kvRaw(body,ms){
+  const ac=(typeof AbortController!=='undefined')?new AbortController():null;
+  const t=setTimeout(()=>{try{ac&&ac.abort();}catch(e){}},ms||5000);
+  const t0=now();
+  try{
+    const r=await fetch('/api/kv',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),signal:ac?ac.signal:undefined});
+    if(!r.ok){
+      KVSTAT.fail++;
+      if(r.status===429||r.status===402)KVSTAT.quota=true;
+      throw new Error('kv '+r.status);
+    }
+    const j=await r.json();
+    KVSTAT.ok++; KVSTAT.ms=now()-t0; KVSTAT.last=now();
+    return j;
+  } finally { clearTimeout(t); }
+}
 async function kv(op,key,val,ttl){
-  const r=await fetch('/api/kv',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({op,key,value:val,ttl:ttl||3600})});
-  if(!r.ok)throw new Error('kv '+r.status);
-  return (await r.json()).value;
+  return (await kvRaw({op,key,value:val,ttl:ttl||3600})).value;
+}
+/* One round trip instead of two or three. Falls back automatically if the
+   deployed api/kv.js predates the batch op. */
+let MGET=true;
+async function kvMany(keys){
+  if(MGET){
+    try{
+      const j=await kvRaw({op:'mget',keys});
+      if(j&&j.values)return j.values;
+      MGET=false;
+    }catch(e){ if(String(e.message).indexOf('400')>=0)MGET=false; else throw e; }
+  }
+  const out=[];
+  for(const k of keys)out.push(await kv('get',k));
+  return out;
 }
 const RTC={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]};
 function gather(pc){return new Promise(res=>{
@@ -1653,6 +1685,7 @@ let draining=false;
 async function hostDrain(){
   if(!NET.host||!NET.relay||draining)return;
   draining=true;
+  try{
   for(const s of NET.slots){
     if(s.cid==='me')continue;
     const d=NET.dcs[s.cid];
@@ -1674,7 +1707,7 @@ async function hostDrain(){
       }
     }catch(e){}
   }
-  draining=false;
+  } finally { draining=false; }               // never leave the guard latched
 }
 async function joinRoom(code){
   NET.host=false; NET.code=code; NET.cid=rc()+rc();
@@ -1721,26 +1754,31 @@ function startRelayClient(){
   if(NET.relayTimer)return;
   for(const m of NET.pending)queueOut(m);
   NET.pending.length=0;
-  let busy=false;
+  let busy=false, misses=0;
   NET.relayTimer=setInterval(async()=>{
     if(!NET.relay||busy)return;
+    const d=NET.dcs.host;
+    if(d&&d.readyState==='open'&&!NET.outbox.length)return; // direct link is carrying it
     busy=true;
     try{
-      // snapshots first: they are what makes the game feel alive
-      if(S.started){
-        const v=await kv('get','ff:'+NET.code+':snap');
-        if(v){NET.lastRx=now();onMsg(v,'host');}
-      }
-      const v2=await kv('get','ff:'+NET.code+':msg:'+NET.cid);
-      if(v2)for(const m of JSON.parse(v2)){
+      const keys=['ff:'+NET.code+':msg:'+NET.cid];
+      if(S.started)keys.unshift('ff:'+NET.code+':snap');
+      const vals=await kvMany(keys);            // one round trip, not two
+      const snapV=S.started?vals[0]:null, msgV=S.started?vals[1]:vals[0];
+      if(snapV){NET.lastRx=now();onMsg(snapV,'host');}
+      if(msgV)for(const m of JSON.parse(msgV)){
         const q=m._s|0;
         if(q>NET.lastSeq){NET.lastSeq=q;onMsg(JSON.stringify(m),'host');}
         if(m.t==='ack'&&m.upto!==undefined)
-          NET.outbox=NET.outbox.filter(x=>x._q>m.upto);   // host has them; stop resending
+          NET.outbox=NET.outbox.filter(x=>x._q>m.upto);
       }
       if(NET.outbox.length)await flushOut();
-    }catch(e){}
-    busy=false;
+      misses=0; NET.backoff=0;
+    }catch(e){
+      // back off rather than hammering a store that is refusing us
+      misses++; NET.backoff=Math.min(6,misses);
+    }
+    finally{ busy=false; }                      // MUST run, or the client stalls forever
   },140);
 }
 function slotState(s){
@@ -3077,6 +3115,19 @@ function initChat(){
     $('chatbar').addEventListener('pointerdown',e=>e.stopPropagation());
 }
 
+/* If snapshots stop arriving the screen would just freeze with no explanation.
+   Say so, and keep trying. */
+let linkWarned=0;
+function linkWatch(){
+  if(!S.started||S.over)return;
+  const gap=now()-(NET.lastRx||0);
+  if(gap>5000&&now()-linkWarned>8000){
+    linkWarned=now();
+    toast(KVSTAT.quota?'Key store is rate limiting — see Upstash usage'
+                      :'Lost contact with the host — retrying');
+  }
+}
+
 /* ================================================================== loop = */
 let acc=0,last=0,frame=0,lastSent=-1,lastAuto=0;
 function loop(t){
@@ -3099,6 +3150,7 @@ function loop(t){
   if(S.started){
     // a client sees positions only as often as snapshots land, so it needs to
     // glide between them rather than snap; the host is already continuous
+    if(NET.on&&!NET.host&&frame%30===0)linkWatch();
     const sec=Math.min(0.25,dt/1000);
     SMOOTH=1-Math.exp(-sec*(NET.on&&!NET.host?9:26));
     ageFX(sec);
