@@ -958,7 +958,8 @@ function tickSim(){
     const s=p.sp*dt/d;
     p.x+=dx*s;p.y+=dy*s+p.arc*Math.sin(clamp(1-p.ttl/1.2,0,1)*Math.PI)*0.02;p.z+=dz*s;
   }
-  for(let i=S.fx.length-1;i>=0;i--){S.fx[i].t+=dt;if(S.fx[i].t>0.8)S.fx.splice(i,1);}
+  /* effects are aged in the render loop, not here: a client never runs the sim
+     and its markers would otherwise sit on screen forever */
 
   /* ---- players: age research, wonder, pop ---- */
   for(const p of S.players){
@@ -1466,6 +1467,7 @@ function applySnap(s){
     if(p.age!==q[6]){p.age=q[6];renderAgeTrack();refreshCmd();}
     p.ageP=q[7]/100;p.ageing=q[7]>0&&q[7]<100?1:0;p.alive=!!q[8];p.wonderT=q[9];});
   S.proj=[]; for(let i=0;i<s.pr.length;i+=3)S.proj.push({x:s.pr[i]/8,y:s.pr[i+1]/8,z:s.pr[i+2]/8});
+  if(S.fx.length>60)S.fx.length=0;
 }
 
 const NET={on:false,host:false,code:'',cid:'',pcs:{},dcs:{},relay:false,slots:[],
@@ -2132,6 +2134,14 @@ function pushI(name,x,y,z,ang,sc,col){
 }
 let resDirty=true;
 const MYU=[];
+const FX_LIFE=0.8;
+function ageFX(sec){
+  for(let i=S.fx.length-1;i>=0;i--){
+    S.fx[i].t+=sec;
+    if(S.fx[i].t>FX_LIFE)S.fx.splice(i,1);
+  }
+  if(S.fx.length>120)S.fx.splice(0,S.fx.length-120);   // belt and braces
+}
 function drawWorld(alpha){
   for(const k in IM)IM[k].count=0;
   MYU.length=0;
@@ -3032,6 +3042,7 @@ function loop(t){
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
+    ageFX(Math.min(0.25,dt/1000));
     if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
