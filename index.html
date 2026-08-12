@@ -1471,7 +1471,8 @@ function applySnap(s){
 }
 
 const NET={on:false,host:false,code:'',cid:'',pcs:{},dcs:{},relay:false,slots:[],
-  lastSnap:0,pending:[],poll:null,seq:0,lastSeq:-1,relayTimer:null};
+  lastSnap:0,pending:[],poll:null,fast:null,seq:0,lastSeq:-1,relayTimer:null,
+  outSeq:0,outbox:[],flushing:false,flushSoon:null,seen:{},rtt:0,lastRx:0};
 const RELAYQ={};
 /* Lobby and start traffic needs durable delivery: one overwritten key loses the
    start handshake outright. Each client drains a numbered mailbox. */
@@ -1527,11 +1528,28 @@ NET.send=function(m,only){
 NET.sendCmd=function(c){
   if(!NET.on)return applyCmd(c,S.me);
   if(NET.host)return applyCmd(c,S.me);
-  const m=JSON.stringify({t:'cmd',c,p:S.me});
+  const m={t:'cmd',c,p:S.me};
   const d=NET.dcs.host;
-  if(d&&d.readyState==='open')d.send(m);
-  else if(NET.relay){NET.pending.push({t:'cmd',c,p:S.me});}
+  if(d&&d.readyState==='open'){try{d.send(JSON.stringify(m));return;}catch(e){}}
+  queueOut(m);
 };
+/* The old code spliced its queue and overwrote one key, so anything the host
+   had not yet read was destroyed. Messages now carry a sequence, stay in the
+   outbox until the host acknowledges them, and go out immediately. */
+function queueOut(m){
+  m._q=++NET.outSeq; m._at=now();
+  NET.outbox.push(m);
+  if(NET.outbox.length>40)NET.outbox.shift();
+  if(!NET.flushSoon)NET.flushSoon=setTimeout(()=>{NET.flushSoon=null;flushOut();},40);
+}
+async function flushOut(){
+  if(NET.flushing||!NET.relay||!NET.outbox.length)return;
+  NET.flushing=true;
+  const batch=NET.outbox.slice(-24);
+  try{ await kv('set','ff:'+NET.code+':cmd:'+NET.cid,JSON.stringify(batch),120); }
+  catch(e){}
+  NET.flushing=false;
+}
 /* what our partners on the same tribe currently have selected */
 const PARTNER=new Map(); let PSEL=new Set(), lastShare=0;
 function rebuildPSEL(){
@@ -1594,7 +1612,8 @@ async function hostRoom(){
        nlog('key store OK, room '+NET.code);
        goRelay(); }
   catch(e){ netmsg('No key store reachable. Deploy api/kv.js, or play skirmish.'); return; }
-  NET.poll=setInterval(hostPoll,1600); hostPoll();
+  NET.poll=setInterval(hostPoll,1500); hostPoll();
+  NET.fast=setInterval(hostDrain,140);
 }
 async function hostPoll(){
   let reqs=[]; try{const v=await kv('get','ff:'+NET.code+':req'); if(v)reqs=JSON.parse(v);}catch(e){return;}
@@ -1627,14 +1646,35 @@ async function hostPoll(){
   // a link that never opens must fall back BEFORE the match starts, or the start
   // handshake has nowhere to go and the lobby deadlocks
   if(!NET.relay)goRelay();
-  // drain each client's command mailbox whenever the relay is live
-  if(NET.relay){
-    for(const s of NET.slots){ if(s.cid==='me')continue;
-      try{const v=await kv('get','ff:'+NET.code+':cmd:'+s.cid);
-        if(v){await kv('set','ff:'+NET.code+':cmd:'+s.cid,'',60);
-          for(const m of JSON.parse(v))onMsg(JSON.stringify(m),s.cid);}}catch(e){}
-    }
+}
+/* Draining commands runs on its own fast timer. It used to hang off the lobby
+   poll, where a single key-store hiccup would skip it entirely. */
+let draining=false;
+async function hostDrain(){
+  if(!NET.host||!NET.relay||draining)return;
+  draining=true;
+  for(const s of NET.slots){
+    if(s.cid==='me')continue;
+    const d=NET.dcs[s.cid];
+    if(d&&d.readyState==='open')continue;   // that client has a direct link
+    try{
+      const v=await kv('get','ff:'+NET.code+':cmd:'+s.cid);
+      if(!v)continue;
+      const seen=NET.seen[s.cid]||0;
+      let top=seen;
+      for(const m of JSON.parse(v)){
+        const q=m._q|0;
+        if(q<=seen)continue;              // already applied; a resend is harmless
+        if(q>top)top=q;
+        onMsg(JSON.stringify(m),s.cid);
+      }
+      if(top>seen){
+        NET.seen[s.cid]=top;
+        relayTo(s.cid,{t:'ack',upto:top});   // let them stop resending
+      }
+    }catch(e){}
   }
+  draining=false;
 }
 async function joinRoom(code){
   NET.host=false; NET.code=code; NET.cid=rc()+rc();
@@ -1679,17 +1719,29 @@ async function joinRoom(code){
 }
 function startRelayClient(){
   if(NET.relayTimer)return;
+  for(const m of NET.pending)queueOut(m);
+  NET.pending.length=0;
+  let busy=false;
   NET.relayTimer=setInterval(async()=>{
-    if(!NET.relay)return;
-    try{const v=await kv('get','ff:'+NET.code+':msg:'+NET.cid);
-      if(v)for(const m of JSON.parse(v)){
+    if(!NET.relay||busy)return;
+    busy=true;
+    try{
+      // snapshots first: they are what makes the game feel alive
+      if(S.started){
+        const v=await kv('get','ff:'+NET.code+':snap');
+        if(v){NET.lastRx=now();onMsg(v,'host');}
+      }
+      const v2=await kv('get','ff:'+NET.code+':msg:'+NET.cid);
+      if(v2)for(const m of JSON.parse(v2)){
         const q=m._s|0;
         if(q>NET.lastSeq){NET.lastSeq=q;onMsg(JSON.stringify(m),'host');}
-      }}catch(e){}
-    if(S.started){try{const v=await kv('get','ff:'+NET.code+':snap'); if(v)onMsg(v,'host');}catch(e){}}
-    if(NET.pending.length){const b=NET.pending.splice(0,20);
-      try{await kv('set','ff:'+NET.code+':cmd:'+NET.cid,JSON.stringify(b),120);}catch(e){}}
-  },350);
+        if(m.t==='ack'&&m.upto!==undefined)
+          NET.outbox=NET.outbox.filter(x=>x._q>m.upto);   // host has them; stop resending
+      }
+      if(NET.outbox.length)await flushOut();
+    }catch(e){}
+    busy=false;
+  },140);
 }
 function slotState(s){
   if(s.cid==='me')return 'host';
@@ -2133,6 +2185,7 @@ function pushI(name,x,y,z,ang,sc,col){
   m.count++;
 }
 let resDirty=true;
+let SMOOTH=0.32;
 const MYU=[];
 const FX_LIFE=0.8;
 function ageFX(sec){
@@ -2149,7 +2202,9 @@ function drawWorld(alpha){
   for(const e of S.ents){
     if(e.dead)continue;
     if(e.rx===undefined){e.rx=e.x;e.rz=e.z;}
-    e.rx=lerp(e.rx,e.x,0.32); e.rz=lerp(e.rz,e.z,0.32);
+    const k=SMOOTH;
+    if(Math.abs(e.x-e.rx)+Math.abs(e.z-e.rz)>14){e.rx=e.x;e.rz=e.z;}  // teleport, don't slide
+    else{e.rx=lerp(e.rx,e.x,k); e.rz=lerp(e.rz,e.z,k);}
     const y=groundY(e.rx,e.rz);
     if(e.k==='u'){
       if(e.o===S.me)MYU.push(e);
@@ -3036,13 +3091,17 @@ function loop(t){
     if(NET.on&&NET.host){
       // the relay lane is polled at ~3/sec, so writing at 6.7/sec just burns
       // bandwidth and backs up the queue
-      const every=NET.relay?7:3;
+      const every=NET.relay?4:2;
       if(S.tick-lastSent>=every){lastSent=S.tick;NET.send(encodeSnap());}
     }
     if(!NET.on&&t-lastAuto>30000){lastAuto=t;saveTo('auto');refreshContinue();}
   }
   if(S.started){
-    ageFX(Math.min(0.25,dt/1000));
+    // a client sees positions only as often as snapshots land, so it needs to
+    // glide between them rather than snap; the host is already continuous
+    const sec=Math.min(0.25,dt/1000);
+    SMOOTH=1-Math.exp(-sec*(NET.on&&!NET.host?9:26));
+    ageFX(sec);
     if(frame%20===0&&CHAT.log.length&&!CHAT.open)drawChat();
     if(PARTNER.size&&frame%30===0)rebuildPSEL();
     updateCam(); drawWorld();
@@ -3116,7 +3175,8 @@ $('menu').addEventListener('click',e=>{
         cfg:Object.assign({},cfg,{host:false,me:s.civ})},s.cid);});
       startGame(cfg);
       if(NET.poll)clearInterval(NET.poll);
-      NET.poll=setInterval(hostPoll,900);
+      NET.poll=setInterval(hostPoll,2500);          // late joiners only
+      if(!NET.fast)NET.fast=setInterval(hostDrain,140);
     },250);
   }
   else if(a==='doJoin'){
