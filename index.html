@@ -381,7 +381,7 @@ const U={
  inf :{hp:75, atk:9,  spd:3.3, rng:1.0, cd:1.5, dmg:'m', am:2, ap:1, cost:{f:60,g:20},                pop:1, t:15},
  rng :{hp:48, atk:8,  spd:3.2, rng:8.5, cd:1.9, dmg:'p', am:0, ap:2, cost:{w:40,g:25},                pop:1, t:16},
  cav :{hp:115,atk:12, spd:5.4, rng:1.1, cd:1.6, dmg:'m', am:2, ap:1, cost:{f:80,g:25},                pop:2, t:20},
- sie :{hp:200,atk:48, spd:2.1, rng:9.0, cd:4.2, dmg:'s', am:1, ap:6, cost:{w:160,g:75},               pop:3, t:34},
+ sie :{hp:200,atk:44, spd:2.1, rng:9.0, cd:6.0, dmg:'s', am:1, ap:6, cost:{w:160,g:75},               pop:3, t:34},
 };
 const UICON={vill:'⛏',inf:'🪓',rng:'🏹',cav:'🐎',sie:'🪨'};
 
@@ -395,11 +395,13 @@ const B={
  stable  :{hp:760, r:1.9,cost:{w:150},       age:2, tr:['cav'],      t:26, ic:'🐴', nm:'Stable'},
  siegew  :{hp:800, r:2.1,cost:{w:200,g:50},  age:3, tr:['sie'],      t:32, ic:'🛠', nm:'Siege Works'},
  tower   :{hp:950, r:1.1,cost:{w:50,s:100},  age:3, atk:14,rngA:11,cd:1.6, t:22, ic:'🗼', nm:'Watchtower'},
+ wall    :{hp:1200,r:0.9,cost:{s:14},        age:2, thin:1, t:5,  ic:'▤', nm:'Wall'},
+ gate    :{hp:1000,r:0.9,cost:{s:30,w:20},   age:2, thin:1, t:9,  ic:'🚪', nm:'Gate'},
  fort    :{hp:2600,r:2.2,cost:{s:300,g:150}, age:6, atk:26,rngA:13,cd:1.4, pop:5,
            tr:['inf','rng','cav'], t:60, ic:'🏰', nm:'Fortress'},
  wonder  :{hp:3200,r:3.0,cost:{w:600,s:600,g:600},age:7, t:180, ic:'🗿', nm:'Wonder'},
 };
-const BORDER=['tc','house','farm','store','barracks','range','stable','siegew','tower','fort','wonder'];
+const BORDER=['tc','house','farm','store','barracks','range','stable','siegew','wall','gate','tower','fort','wonder'];
 
 /* resource nodes */
 const RES={
@@ -747,6 +749,13 @@ function applyCmd(c,pi){
     if(!canAfford(p,need)){if(pi===S.me)toast('Not enough for the next age');break;}
     if(!S.ents.some(e=>!e.dead&&e.k==='b'&&e.o===pi&&e.t==='tc'&&e.done))break;
     pay(p,need); p.ageing=1; p.ageP=0; break;}
+  case 'gate':{
+    const g=S.byId.get(c.bid);
+    if(!g||g.o!==pi||g.t!=='gate'||!g.done)break;
+    g.open=g.open?0:1;
+    stampBlock(g,g.open?0:1);
+    if(pi===S.me)toast(g.open?'Gate opened — anyone can walk through':'Gate shut');
+    break;}
   case 'raze':{
     const b=S.byId.get(c.bid); if(b&&b.o===pi&&b.k==='b'){stampBlock(b,0);del(b);}
     break;}
@@ -764,17 +773,23 @@ function placeOK(t,x,z){
     if(i<0||j<0||i>=NT||j>=NT)return false;
     if(PASS[j*NT+i]!==1||BLOCK[j*NT+i]!==0)return false;
   }
-  let openRing=0;
-  for(let k=0;k<12;k++){
-    const a=k/12*TAU, rx=w2t(x+Math.cos(a)*(d.r+1.6)), rz=w2t(z+Math.sin(a)*(d.r+1.6));
-    if(walkable(rx,rz))openRing++;
+  if(!d.thin){
+    let openRing=0;
+    for(let k=0;k<12;k++){
+      const a=k/12*TAU, rx=w2t(x+Math.cos(a)*(d.r+1.6)), rz=w2t(z+Math.sin(a)*(d.r+1.6));
+      if(walkable(rx,rz))openRing++;
+    }
+    if(openRing<4)return false;
   }
-  if(openRing<4)return false;
   let ok=true;
   near(x,z,d.r+6,e=>{
     if(e.dead)return;
     if(e.k==='r'&&dist2(e,{x,z})<(d.r+e.r+0.4)**2)ok=false;
-    if(e.k==='b'&&dist2(e,{x,z})<(d.r+e.r+0.5)**2)ok=false;
+    if(e.k==='b'){
+      // walls and gates are meant to touch each other and butt up to towers
+      const gap=(d.thin&&(B[e.t].thin||e.t==='tower'))?0.1:0.5;
+      if(dist2(e,{x,z})<(d.r+e.r+gap)**2)ok=false;
+    }
   });
   return ok;
 }
@@ -831,7 +846,11 @@ function damage(t,amt,dtype,acls){
   if(t.dead)return;
   let d=amt;
   if(t.k==='b'){ d*= dtype==='s'?1.0 : dtype==='m'?0.5 : 0.25; d=Math.max(1,d); }
-  else{ d=Math.max(1, amt*bonus(acls,t.t) - (dtype==='p'?t.st.ap:t.st.am)); }
+  else{
+    // siege wrecks walls and buildings; against soldiers it is a bad trade
+    if(dtype==='s')d*=0.55;
+    d=Math.max(1, d*bonus(acls,t.t) - (dtype==='p'?t.st.ap:t.st.am));
+  }
   t.hp-=d;
   if(t.o===S.me||(acls&&t.k==='u'))heat(t.o===S.me?0.09:0.05);
   if(t.hp>0){ if(dtype==='p')SFX.arrowHit(t.x,t.z); else SFX.melee(t.x,t.z); }
@@ -994,7 +1013,18 @@ function tickSim(){
     const ty=groundY(tg.x,tg.z)+0.6;
     const dx=tg.x-p.x, dy=ty-p.y, dz=tg.z-p.z, d=Math.hypot(dx,dy,dz);
     if(d<0.9){damage(tg,p.dmg,p.dt,p.cls);
-      if(p.cls==='sie')near(tg.x,tg.z,2.2,e=>{if(e!==tg&&!e.dead&&e.o!==p.o&&e.k!=='r')damage(e,p.dmg*0.4,'s','sie');});
+      if(p.cls==='sie'){
+        // tighter blast, and it falls off toward the edge instead of dealing
+        // full splash to everything in the circle
+        const R=1.5, R2=R*R;
+        near(tg.x,tg.z,R,e=>{
+          if(e===tg||e.dead||e.o===p.o||e.k==='r')return;
+          const d2=(e.x-tg.x)**2+(e.z-tg.z)**2;
+          if(d2>R2)return;
+          const fall=1-Math.sqrt(d2)/R;
+          damage(e,p.dmg*0.28*fall,'s','sie');
+        });
+      }
       S.proj.splice(i,1);continue;}
     const s=p.sp*dt/d;
     p.x+=dx*s;p.y+=dy*s+p.arc*Math.sin(clamp(1-p.ttl/1.2,0,1)*Math.PI)*0.02;p.z+=dz*s;
@@ -2213,6 +2243,16 @@ function mkBuilding(t,colHex,era){
     for(let i=0;i<5;i++){const ang=i/5*TAU;
       add(new THREE.CylinderGeometry(0.22,0.26,2.4,5),trim,Math.cos(ang)*r*1.1,1.2,Math.sin(ang)*r*1.1);}
     break;
+  case 'wall':
+    add(new THREE.BoxGeometry(2.0,1.5,0.9),wall,0,0.75,0);
+    add(new THREE.BoxGeometry(2.1,0.22,1.0),trim,0,1.6,0);
+    for(let i=-1;i<=1;i++)add(new THREE.BoxGeometry(0.3,0.3,0.3),wall,i*0.7,1.85,0);
+    break;
+  case 'gate':
+    for(const sd of [-1,1])add(new THREE.BoxGeometry(0.55,2.1,1.0),wall,sd*0.78,1.05,0);
+    add(new THREE.BoxGeometry(2.2,0.34,1.05),roofM,0,2.25,0);
+    add(new THREE.BoxGeometry(1.1,1.5,0.34),dark,0,0.75,0);
+    break;
   default: body(r*1.6,1.2,r*1.6);
   }
   return g;
@@ -2696,8 +2736,40 @@ function issueOrder(sx,sy,attackMove){
   S.fx.push({x:g?g.x:tgt.x,z:g?g.z:tgt.z,t:0.4,big:false});
   taskDone(ids);
 }
+/* Walls are laid as a run: drag from one point to another and the segments are
+   spaced a tile apart, snapping to a nearby tower at either end. */
+function wallSnap(p){
+  const t=findNearest(p.x,p.z,4.5,e=>!e.dead&&e.k==='b'&&e.o===S.me&&e.t==='tower');
+  return t?{x:t.x,z:t.z,tower:1}:p;
+}
+function wallLine(a,b){
+  const A=wallSnap(a), B2=wallSnap(b);
+  const dx=B2.x-A.x, dz=B2.z-A.z, len=Math.hypot(dx,dz);
+  const n=Math.min(24,Math.max(1,Math.round(len/TS)));
+  const out=[];
+  for(let i=A.tower?1:0;i<=n-(B2.tower?1:0);i++){
+    const t=n?i/n:0;
+    out.push({x:A.x+dx*t,z:A.z+dz*t});
+  }
+  return out;
+}
+function placeWallRun(a,b){
+  const pts=wallLine(a,b), p=S.players[S.me];
+  const cost=B[ghostType].cost;
+  let placed=0;
+  for(const q of pts){
+    if(!canAfford(p,cost))break;
+    if(!placeOK(ghostType,q.x,q.z))continue;
+    NET.sendCmd({c:'place',b:ghostType,x:q.x,z:q.z,
+      ids:[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;})});
+    placed++;
+  }
+  if(!placed)SFX.deny(); else toast(placed+' section'+(placed===1?'':'s')+' marked out');
+  return placed;
+}
 function tryPlace(sx,sy){
   const g=pickGround(sx,sy); if(!g)return;
+  if(ghostType==='wall'){ placeWallRun(g,g); if(!P.shift)setGhost(null); return; }
   if(!placeOK(ghostType,g.x,g.z)){toast('Cannot build there');SFX.deny();return;}
   const ids=[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;});
   NET.sendCmd({c:'place',b:ghostType,x:g.x,z:g.z,ids});
@@ -2763,6 +2835,12 @@ canvas.addEventListener('pointermove',e=>{
     if(P.multi)return; // a finger left over from a pan is not a new gesture
     P.moved=Math.max(P.moved,Math.hypot(p.x-P.sx,p.y-P.sy));
     if(ghostType){moveGhost(p.x,p.y);return;}
+    if(P.moved>10&&ghostType==='wall'){
+      if(P.long){clearTimeout(P.long);P.long=0;}
+      if(!P.wallA)P.wallA=pickGround(P.sx,P.sy);
+      P.wallB=pickGround(p.x,p.y);
+      return;
+    }
     if(P.moved>10){
       if(P.long){clearTimeout(P.long);P.long=0;}
       P.box=true;
@@ -2798,7 +2876,14 @@ canvas.addEventListener('pointerup',e=>{
   if(P.t.length)return;
   // a two-finger pan never updates P.moved, so without this the gesture would
   // fall through and be treated as a tap on the ground
-  if(P.multi){P.multi=false;P.moved=0;return;}
+  if(P.multi){P.multi=false;P.moved=0;P.wallA=P.wallB=null;return;}
+  if(P.wallA&&P.wallB){
+    placeWallRun(P.wallA,P.wallB);
+    P.wallA=P.wallB=null;
+    if(!P.shift)setGhost(null);
+    return;
+  }
+  P.wallA=P.wallB=null;
   if(P.moved>10)return;
   if(ghostType){tryPlace(t.x,t.y);return;}
   const ent=pickEnt(t.x,t.y,38);
@@ -2932,6 +3017,8 @@ function refreshCmd(){
         act:()=>NET.sendCmd({c:'train',bid:ownB.id,u})});
     }
     if(ownB.q.length)btns.push({ic:'✕',nm:'Cancel',cost:'',act:()=>NET.sendCmd({c:'unq',bid:ownB.id})});
+    if(ownB.t==='gate')btns.push({ic:ownB.open?'🚪':'⛓',nm:ownB.open?'Shut gate':'Open gate',
+      cost:'',act:()=>NET.sendCmd({c:'gate',bid:ownB.id})});
     if(ownB.t!=='tc')btns.push({ic:'🔥',nm:'Raze',cost:'',act:()=>NET.sendCmd({c:'raze',bid:ownB.id})});
   }
   if(hasVill){
