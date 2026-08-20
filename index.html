@@ -692,6 +692,20 @@ function setGoal(u,x,z){
     else{u.fld=null;u.gx=-1;} // retry next tick rather than cache a miss
   }
 }
+/* A construction site is rarely one building. When a villager finishes, it
+   looks for another site nearby before falling back to whatever it was
+   gathering beforehand — otherwise a wall run needs one tap per section. */
+const SITE_R=34;
+function nextJob(u){
+  const site=findNearest(u.x,u.z,SITE_R,e=>e.k==='b'&&e.o===u.o&&!e.dead&&e.done<1);
+  if(site){order(u,{t:'build',id:site.id});return true;}
+  const res=u.lastRes;
+  if(res){
+    const n=resNodeNear(u.x,u.z,res,u.o);
+    if(n){order(u,{t:'gather',id:n.id,res});return true;}
+  }
+  u.ord=null; return false;
+}
 function dropoffFor(u){
   return findNearest(u.x,u.z,90,e=>e.k==='b'&&e.o===u.o&&e.done&&B[e.t].drop);
 }
@@ -926,6 +940,7 @@ function tickSim(){
         if(n2){order(u,{t:'gather',id:n2.id,res});}else u.ord=null;
         break;}
       od.res=n.k==='r'?n.res:'f';
+      u.lastRes=od.res;               // remembered so we can return to it later
       if(u.carry>=CARRY){order(u,{t:'ret',res:od.res,back:n.id});break;}
       if(moveTo(u,n.x,n.z,contact(n)+0.65,dt)){
         if((u.snd=(u.snd||0)-dt)<=0){
@@ -960,9 +975,9 @@ function tickSim(){
       const b=S.byId.get(od.id);
       if(!b||b.dead){u.ord=null;break;}
       if(b.done>=1&&b.hp>=b.mhp){
-        // finished while we walked over — if it's a farm, get to work on it
+        // finished while we walked over
         if(b.t==='farm'&&b.o===u.o&&b.food>0)order(u,{t:'gather',id:b.id,res:'f'});
-        else u.ord=null;
+        else nextJob(u);
         break;}
       if(moveTo(u,b.x,b.z,contact(b)+0.55,dt)){
         u.ang=Math.atan2(b.x-u.x,b.z-u.z);
@@ -975,11 +990,12 @@ function tickSim(){
             if(b.o===S.me)toast(B[b.t].nm+' raised');
             if(b.t==='wonder'){S.players[b.o].wonder=1;S.players[b.o].wonderT=240;
               toast(PNAME[b.o]+' has raised a Wonder');}
-            // whoever raised a farm stays on to work it
+            // whoever raised a farm stays on to work it; everyone else moves
+            // to the next site, then back to gathering
             if(b.t==='farm'&&b.food>0)order(u,{t:'gather',id:b.id,res:'f'});
-            else u.ord=null;}
+            else nextJob(u);}
         }else if(b.hp<b.mhp){ b.hp=Math.min(b.mhp,b.hp+b.mhp*0.04*dt); }
-        else u.ord=null;
+        else nextJob(u);
       }
       break;}
     }
@@ -2826,21 +2842,30 @@ function tryPlace(sx,sy){
 }
 let WALLA=null, WALLGHOST=[];
 function clearWallGhost(){
-  for(const m of WALLGHOST)world.remove(m);
-  WALLGHOST.length=0;
+  for(const m of WALLGHOST){world.remove(m);
+    if(m.geometry)m.geometry.dispose(); if(m.material)m.material.dispose();}
+  WALLGHOST.length=0; WALLPTS=[];
 }
 /* live preview of the run, so you can see the line before committing */
+let WALLPTS=[];
 function showWallGhost(a,b){
   clearWallGhost();
   if(!ghostType||!B[ghostType].thin)return;
   const pts=wallLine(a,b);
-  for(const q of pts){
-    const ok=placeOK(ghostType,q.x,q.z);
+  WALLPTS=pts.map(q=>({x:q.x,z:q.z,ok:placeOK(ghostType,q.x,q.z)}));
+  const ang=Math.abs(b.x-a.x)>=Math.abs(b.z-a.z)?0:Math.PI/2;
+  for(const q of WALLPTS){
+    // a solid bright block plus a base plate: at phone zoom a faint ghost
+    // simply disappears against the terrain
+    const col=q.ok?PCOL[S.me]:0xE0552B;
     const m=new THREE.Mesh(new THREE.BoxGeometry(1.9,1.4,0.85),
-      new THREE.MeshToonMaterial({color:ok?PCOL[S.me]:0xE0552B,transparent:true,opacity:0.45}));
-    m.position.set(q.x,groundY(q.x,q.z)+0.7,q.z);
-    m.rotation.y=Math.abs(b.x-a.x)>=Math.abs(b.z-a.z)?0:Math.PI/2;
+      new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.42,depthWrite:false}));
+    m.position.set(q.x,groundY(q.x,q.z)+0.7,q.z); m.rotation.y=ang;
     world.add(m); WALLGHOST.push(m);
+    const pl=new THREE.Mesh(new THREE.BoxGeometry(1.94,0.08,0.9),
+      new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.85,depthWrite:false}));
+    pl.position.set(q.x,groundY(q.x,q.z)+0.06,q.z); pl.rotation.y=ang;
+    world.add(pl); WALLGHOST.push(pl);
   }
 }
 function setGhost(t){
@@ -2883,7 +2908,12 @@ canvas.addEventListener('pointerdown',e=>{
   if(P.t.length===1){
     const p=P.t[0]; P.sx=p.x;P.sy=p.y;P.lx=p.x;P.ly=p.y;P.moved=0;P.start=now();P.box=false;
     P.long=setTimeout(()=>{P.long=0;if(!P.moved&&!ghostType){issueOrder(P.sx,P.sy,true);toast('Attack move');navigator.vibrate&&navigator.vibrate(18);}},430);
-    if(ghostType)moveGhost(p.x,p.y);
+    if(ghostType){
+      moveGhost(p.x,p.y);
+      // touch has no hover: without this the anchored run is invisible until
+      // the finger moves, which reads as "there is no preview"
+      if(WALLA&&B[ghostType].thin){const g=pickGround(p.x,p.y); if(g)showWallGhost(WALLA,g);}
+    }
   }else{
     clearTimeout(P.long);P.long=0;boxEl.style.display='none';P.box=false;P.multi=true;
     const [a,b]=P.t; P.pinch=Math.hypot(a.x-b.x,a.y-b.y); P.ang=Math.atan2(b.y-a.y,b.x-a.x);
@@ -3168,9 +3198,25 @@ function updateHUD(){
   if(w&&S.tick%40===0)toast((w.i===S.me?'Your':PNAME[w.i]+"'s")+' Wonder — '+Math.ceil(w.wonderT)+'s');
 }
 /* health bars overlay */
+function drawWallHint(){
+  if(!WALLPTS.length)return;
+  const good=WALLPTS.filter(q=>q.ok).length;
+  const c=B[ghostType]&&B[ghostType].cost.s?good*B[ghostType].cost.s:0;
+  const a=WALLPTS[0], b=WALLPTS[WALLPTS.length-1];
+  _p3.set(b.x,groundY(b.x,b.z)+2.4,b.z).project(cam);
+  if(_p3.z>1)return;
+  const x=(_p3.x*0.5+0.5)*hbC.width, y=(-_p3.y*0.5+0.5)*hbC.height;
+  const txt=good+' section'+(good===1?'':'s')+(c?'  ·  '+c+' stone':'');
+  hbX.font='700 12px Trebuchet MS,sans-serif'; hbX.textAlign='center';
+  const w=hbX.measureText(txt).width+14;
+  hbX.fillStyle='#0B0907E0'; hbX.fillRect(x-w/2,y-20,w,20);
+  hbX.fillStyle=good?'#FFD400':'#E0552B'; hbX.fillText(txt,x,y-6);
+  hbX.textAlign='left';
+}
 function drawBars(){
   hbX.clearRect(0,0,hbC.width,hbC.height);
   if(!S.started||renderer.xr.isPresenting)return;
+  drawWallHint();
   for(const e of S.ents){
     if(e.dead||e.k==='r')continue;
     const hurt=e.hp<e.mhp*0.985, selq=SELN.has(e.id);
