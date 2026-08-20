@@ -634,6 +634,8 @@ function stampBlock(b,v){
   for(let z=cz-r;z<=cz+r;z++)for(let x=cx-r;x<=cx+r;x++)
     if(x>=0&&z>=0&&x<NT&&z<NT){const i=z*NT+x;BLOCK[i]=v;WALK[i]=PASS[i]&&!v?1:0;}
   fieldStamp++;
+  for(const e of S.ents)if(!e.dead&&e.k==='b'&&B[e.t].thin&&
+    Math.abs(e.x-b.x)<TS*2&&Math.abs(e.z-b.z)<TS*2)e.wstamp=-1;
   if(v)for(const e of S.ents)if(!e.dead&&e.k==='u'&&Math.abs(e.x-b.x)<8&&Math.abs(e.z-b.z)<8)shoveOut(e);
 }
 
@@ -1062,7 +1064,29 @@ function tickSim(){
   }
   if(!S.over)for(const p of S.players)if(p.ai&&p.alive)aiTick(p);
 }
-function ang4(b){return ((b.id*2.399)%TAU);}
+function ang4(b){
+  if(B[b.t]&&B[b.t].thin)return wallAngle(b);
+  return ((b.id*2.399)%TAU);
+}
+/* A wall faces along its neighbours. Recomputed only when the set of buildings
+   changes, so a long wall costs nothing per frame. */
+function wallAngle(b){
+  if(b.wstamp===fieldStamp&&b.wrot!==undefined)return b.wrot;
+  let nx=0,nz=0,found=0;
+  near(b.x,b.z,TS*1.6,e=>{
+    if(e===b||e.dead||e.k!=='b')return;
+    if(!(B[e.t].thin||e.t==='tower'))return;
+    const dx=e.x-b.x, dz=e.z-b.z, d=Math.hypot(dx,dz);
+    if(d<0.1||d>TS*1.6)return;
+    // mirror onto one half so two opposite neighbours reinforce instead of cancel
+    let ux=dx/d, uz=dz/d;
+    if(ux<0||(ux===0&&uz<0)){ux=-ux;uz=-uz;}
+    nx+=ux; nz+=uz; found++;
+  });
+  b.wrot=found?Math.atan2(nx,nz)+Math.PI/2:0;
+  b.wstamp=fieldStamp;
+  return b.wrot;
+}
 /* ============================================================ skirmish AI = */
 function aiSpot(p,type,cx,cz,minR,maxR){
   for(let pass=0;pass<3;pass++){
@@ -2742,15 +2766,27 @@ function wallSnap(p){
   const t=findNearest(p.x,p.z,4.5,e=>!e.dead&&e.k==='b'&&e.o===S.me&&e.t==='tower');
   return t?{x:t.x,z:t.z,tower:1}:p;
 }
+/* Sections land on tile centres. Without this a run laid at a slight angle
+   leaves gaps you can walk through, which defeats the entire point. */
 function wallLine(a,b){
   const A=wallSnap(a), B2=wallSnap(b);
-  const dx=B2.x-A.x, dz=B2.z-A.z, len=Math.hypot(dx,dz);
-  const n=Math.min(24,Math.max(1,Math.round(len/TS)));
-  const out=[];
-  for(let i=A.tower?1:0;i<=n-(B2.tower?1:0);i++){
-    const t=n?i/n:0;
-    out.push({x:A.x+dx*t,z:A.z+dz*t});
+  let ax=w2t(A.x), az=w2t(A.z), bx=w2t(B2.x), bz=w2t(B2.z);
+  const dx=bx-ax, dz=bz-az;
+  const steps=Math.min(40,Math.max(Math.abs(dx),Math.abs(dz)));
+  // keep runs to a straight line or a clean diagonal; anything else is a mess
+  let sx,sz;
+  if(Math.abs(dx)>Math.abs(dz)*2){sx=Math.sign(dx);sz=0;}
+  else if(Math.abs(dz)>Math.abs(dx)*2){sx=0;sz=Math.sign(dz);}
+  else {sx=Math.sign(dx);sz=Math.sign(dz);}
+  const out=[], seen=new Set();
+  for(let i=0;i<=steps;i++){
+    const tx=ax+sx*i, tz=az+sz*i;
+    const key=tz*NT+tx;
+    if(seen.has(key))continue; seen.add(key);
+    out.push({x:t2w(tx),z:t2w(tz)});
   }
+  if(A.tower)out.shift();
+  if(B2.tower&&out.length)out.pop();
   return out;
 }
 function placeWallRun(a,b){
@@ -2769,7 +2805,7 @@ function placeWallRun(a,b){
 }
 function tryPlace(sx,sy){
   const g=pickGround(sx,sy); if(!g)return;
-  if(ghostType==='wall'){ placeWallRun(g,g); if(!P.shift)setGhost(null); return; }
+  if(B[ghostType].thin){ placeWallRun(g,g); if(!P.shift)setGhost(null); return; }
   if(!placeOK(ghostType,g.x,g.z)){toast('Cannot build there');SFX.deny();return;}
   const ids=[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;});
   NET.sendCmd({c:'place',b:ghostType,x:g.x,z:g.z,ids});
@@ -2784,7 +2820,8 @@ function setGhost(t){
   refreshCmd();
 }
 function moveGhost(sx,sy){
-  if(!ghost)return; const g=pickGround(sx,sy); if(!g)return;
+  if(!ghost)return; let g=pickGround(sx,sy); if(!g)return;
+  if(B[ghostType].thin)g={x:t2w(w2t(g.x)),z:t2w(w2t(g.z))};   // show the real tile
   ghost.position.set(g.x,groundY(g.x,g.z),g.z);
   const ok=placeOK(ghostType,g.x,g.z);
   ghost.traverse(o=>{if(o.material)o.material.color.setHex(ok?0xFFFFFF:0xE0552B);});
@@ -2834,13 +2871,16 @@ canvas.addEventListener('pointermove',e=>{
   if(P.t.length===1){
     if(P.multi)return; // a finger left over from a pan is not a new gesture
     P.moved=Math.max(P.moved,Math.hypot(p.x-P.sx,p.y-P.sy));
-    if(ghostType){moveGhost(p.x,p.y);return;}
-    if(P.moved>10&&ghostType==='wall'){
+    // a wall is dragged as a run, so this must be tested before the generic
+    // "ghost follows the finger" branch below returns
+    if(ghostType&&B[ghostType].thin&&P.moved>10){
       if(P.long){clearTimeout(P.long);P.long=0;}
       if(!P.wallA)P.wallA=pickGround(P.sx,P.sy);
       P.wallB=pickGround(p.x,p.y);
+      if(P.wallB)moveGhost(p.x,p.y);
       return;
     }
+    if(ghostType){moveGhost(p.x,p.y);return;}
     if(P.moved>10){
       if(P.long){clearTimeout(P.long);P.long=0;}
       P.box=true;
