@@ -786,7 +786,10 @@ function placeOK(t,x,z){
   let ok=true;
   near(x,z,d.r+6,e=>{
     if(e.dead)return;
-    if(e.k==='r'&&dist2(e,{x,z})<(d.r+e.r+0.4)**2)ok=false;
+    // Units already walk straight through trees and bushes, so letting a tree
+    // veto a wall was arbitrary — and it punched holes in every run laid
+    // through woodland. Thin structures ignore resources entirely.
+    if(e.k==='r'&&!d.thin&&dist2(e,{x,z})<(d.r+e.r+0.4)**2)ok=false;
     if(e.k==='b'){
       // walls and gates are meant to touch each other and butt up to towers
       const gap=(d.thin&&(B[e.t].thin||e.t==='tower'))?0.1:0.5;
@@ -2800,18 +2803,48 @@ function placeWallRun(a,b){
       ids:[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;})});
     placed++;
   }
-  if(!placed)SFX.deny(); else toast(placed+' section'+(placed===1?'':'s')+' marked out');
+  if(!placed)SFX.deny();
+  else toast(placed<pts.length
+    ? placed+' of '+pts.length+' sections — the rest was blocked'
+    : placed+' section'+(placed===1?'':'s')+' marked out');
   return placed;
 }
 function tryPlace(sx,sy){
   const g=pickGround(sx,sy); if(!g)return;
-  if(B[ghostType].thin){ placeWallRun(g,g); if(!P.shift)setGhost(null); return; }
+  if(B[ghostType].thin){
+    // first tap drops an anchor, second tap runs the wall out to it
+    if(!WALLA){ WALLA={x:g.x,z:g.z}; toast('Wall started — tap the far end'); SFX.click(); return; }
+    const n=placeWallRun(WALLA,g);
+    WALLA=null;
+    if(n&&!P.shift)setGhost(null);
+    return;
+  }
   if(!placeOK(ghostType,g.x,g.z)){toast('Cannot build there');SFX.deny();return;}
   const ids=[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;});
   NET.sendCmd({c:'place',b:ghostType,x:g.x,z:g.z,ids});
   if(!P.shift){setGhost(null);taskDone(ids);}
 }
+let WALLA=null, WALLGHOST=[];
+function clearWallGhost(){
+  for(const m of WALLGHOST)world.remove(m);
+  WALLGHOST.length=0;
+}
+/* live preview of the run, so you can see the line before committing */
+function showWallGhost(a,b){
+  clearWallGhost();
+  if(!ghostType||!B[ghostType].thin)return;
+  const pts=wallLine(a,b);
+  for(const q of pts){
+    const ok=placeOK(ghostType,q.x,q.z);
+    const m=new THREE.Mesh(new THREE.BoxGeometry(1.9,1.4,0.85),
+      new THREE.MeshToonMaterial({color:ok?PCOL[S.me]:0xE0552B,transparent:true,opacity:0.45}));
+    m.position.set(q.x,groundY(q.x,q.z)+0.7,q.z);
+    m.rotation.y=Math.abs(b.x-a.x)>=Math.abs(b.z-a.z)?0:Math.PI/2;
+    world.add(m); WALLGHOST.push(m);
+  }
+}
 function setGhost(t){
+  if(ghostType&&(!t||t!==ghostType)){WALLA=null;clearWallGhost();}
   ghostType=t;
   if(ghost){world.remove(ghost);ghost=null;}
   if(t){ghost=mkBuilding(t,PCOL[S.me],eraOf(S.me));
@@ -2821,7 +2854,11 @@ function setGhost(t){
 }
 function moveGhost(sx,sy){
   if(!ghost)return; let g=pickGround(sx,sy); if(!g)return;
-  if(B[ghostType].thin)g={x:t2w(w2t(g.x)),z:t2w(w2t(g.z))};   // show the real tile
+  if(B[ghostType].thin){
+    g={x:t2w(w2t(g.x)),z:t2w(w2t(g.z))};   // show the real tile
+    if(WALLA){ showWallGhost(WALLA,g); ghost.visible=false; }
+    else { clearWallGhost(); ghost.visible=true; }
+  }
   ghost.position.set(g.x,groundY(g.x,g.z),g.z);
   const ok=placeOK(ghostType,g.x,g.z);
   ghost.traverse(o=>{if(o.material)o.material.color.setHex(ok?0xFFFFFF:0xE0552B);});
@@ -2875,9 +2912,9 @@ canvas.addEventListener('pointermove',e=>{
     // "ghost follows the finger" branch below returns
     if(ghostType&&B[ghostType].thin&&P.moved>10){
       if(P.long){clearTimeout(P.long);P.long=0;}
-      if(!P.wallA)P.wallA=pickGround(P.sx,P.sy);
+      if(!P.wallA)P.wallA=WALLA||pickGround(P.sx,P.sy);
       P.wallB=pickGround(p.x,p.y);
-      if(P.wallB)moveGhost(p.x,p.y);
+      if(P.wallA&&P.wallB)showWallGhost(P.wallA,P.wallB);
       return;
     }
     if(ghostType){moveGhost(p.x,p.y);return;}
@@ -2918,9 +2955,9 @@ canvas.addEventListener('pointerup',e=>{
   // fall through and be treated as a tap on the ground
   if(P.multi){P.multi=false;P.moved=0;P.wallA=P.wallB=null;return;}
   if(P.wallA&&P.wallB){
-    placeWallRun(P.wallA,P.wallB);
-    P.wallA=P.wallB=null;
-    if(!P.shift)setGhost(null);
+    const laid=placeWallRun(P.wallA,P.wallB);
+    P.wallA=P.wallB=null; WALLA=null; clearWallGhost();
+    if(laid&&!P.shift)setGhost(null);
     return;
   }
   P.wallA=P.wallB=null;
@@ -2950,7 +2987,10 @@ addEventListener('keydown',e=>{
   if(tag==='INPUT'||tag==='TEXTAREA')return;
   PCK.keys[e.key.toLowerCase()]=true;
   if(e.key==='Shift')P.shift=true;
-  if(e.key==='Escape'){setGhost(null);SELN.clear();afterSelect();}
+  if(e.key==='Escape'){
+    if(WALLA){WALLA=null;clearWallGhost();toast('Wall cancelled');return;}
+    setGhost(null);SELN.clear();afterSelect();
+  }
   if(!S.started)return;
   const k=e.key.toLowerCase();
   // control groups: ctrl+N to set, N to recall
