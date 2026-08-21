@@ -595,10 +595,13 @@ function newUnit(t,o,x,z,age){
   return add({k:'u',t,o,x,z,hp:st.hp,mhp:st.hp,st,ord:null,cd:0,ang:rr(0,TAU),
     vx:0,vz:0,px:x,pz:z,carry:0,cres:null,fld:null,gx:-1,gz:-1,agr:1,stuck:0,tier:st});
 }
-function newBuild(t,o,x,z,done){
+function newBuild(t,o,x,z,done,rot){
   const d=B[t];
   const e=add({k:'b',t,o,x,z,mhp:d.hp,hp:done?d.hp:Math.max(1,d.hp*0.15),done:done?1:0,
     prog:done?1:0,q:[],qt:0,r:d.r,cd:0,food:d.food||0,builders:0});
+  // a wall faces the way it was drawn; the snapshot already carries `ang`, so
+  // clients and saved games get the same orientation for free
+  if(rot!==undefined){e.rot=rot;e.ang=rot;}
   stampBlock(e,1); return e;
 }
 function newRes(t,x,z){const d=RES[t];return add({k:'r',t,x,z,amt:d.amt,r:d.r,res:d.res});}
@@ -755,7 +758,7 @@ function applyCmd(c,pi){
     if(!placeOK(c.b,c.x,c.z))break;
     if(c.b==='wonder'&&S.ents.some(e=>!e.dead&&e.k==='b'&&e.t==='wonder'&&e.o===pi))break;
     pay(p,d.cost);
-    const b=newBuild(c.b,pi,c.x,c.z,0);
+    const b=newBuild(c.b,pi,c.x,c.z,0,c.rot);
     const list=(c.ids||[]).map(i=>S.byId.get(i)).filter(u=>u&&!u.dead&&u.t==='vill'&&u.o===pi);
     (list.length?list:[]).forEach(u=>order(u,{t:'build',id:b.id}));
     break;}
@@ -1084,7 +1087,11 @@ function tickSim(){
   if(!S.over)for(const p of S.players)if(p.ai&&p.alive)aiTick(p);
 }
 function ang4(b){
-  if(B[b.t]&&B[b.t].thin)return wallAngle(b);
+  if(B[b.t]&&B[b.t].thin){
+    if(b.rot!==undefined)return b.rot;          // the line you drew
+    if(b.ang)return b.ang;                       // came in over the wire
+    return wallAngle(b);                         // AI or legacy: infer it
+  }
   return ((b.id*2.399)%TAU);
 }
 /* A wall faces along its neighbours. Recomputed only when the set of buildings
@@ -1407,7 +1414,7 @@ function endGame(winner,why){
 }
 
 /* ========================================================= save & resume = */
-const SAVE_V=1, ORDT=['','move','amove','attack','gather','ret','build'], RESI=['f','w','g','s'];
+const SAVE_V=2, ORDT=['','move','amove','attack','gather','ret','build'], RESI=['f','w','g','s'];
 const NO_RALLY=-999999;
 
 /* Only the divergence from world generation is stored. The map, and every
@@ -1432,6 +1439,7 @@ function serialize(){
         Math.round(e.done*1000),Math.round(e.prog*1000),Math.round(e.qt*100),
         Math.round(e.food||0),
         e.rally?Math.round(e.rally.x*8):NO_RALLY, e.rally?Math.round(e.rally.z*8):0,
+        e.rot===undefined?9999:Math.round(e.rot*1000),
         e.q.length);
       for(const q of e.q)Bd.push(TIDX[q]);
     }
@@ -1461,9 +1469,10 @@ function deserialize(st){
   for(let i=0;i<st.B.length;){
     const id=st.B[i++],t=TYPES[st.B[i++]],o=st.B[i++],x=st.B[i++]/8,z=st.B[i++]/8,
       hp=st.B[i++],done=st.B[i++]/1000,prog=st.B[i++]/1000,qt=st.B[i++]/100,
-      food=st.B[i++],rx=st.B[i++],rz=st.B[i++],ql=st.B[i++];
+      food=st.B[i++],rx=st.B[i++],rz=st.B[i++],rot=st.B[i++],ql=st.B[i++];
     const d=B[t], e={k:'b',id,t,o,x,z,mhp:d.hp,hp,done,prog,q:[],qt,r:d.r,cd:0,
       food:food||0,builders:0,stall:0};
+    if(rot!==9999){e.rot=rot/1000;e.ang=e.rot;}
     for(let j=0;j<ql;j++)e.q.push(TYPES[st.B[i++]]);
     if(rx!==NO_RALLY)e.rally={x:rx/8,z:rz/8};
     S.ents.push(e); S.byId.set(id,e); stampBlock(e,1);
@@ -2808,14 +2817,26 @@ function wallLine(a,b){
   if(B2.tower&&out.length)out.pop();
   return out;
 }
+function runAngle(pts,a,b){
+  if(pts.length>1){
+    const dx=pts[pts.length-1].x-pts[0].x, dz=pts[pts.length-1].z-pts[0].z;
+    return Math.atan2(dx,dz)+Math.PI/2;
+  }
+  // a single section: follow the anchor if there is one, else the nearest run
+  const dx=b.x-a.x, dz=b.z-a.z;
+  if(Math.abs(dx)+Math.abs(dz)>0.3)return Math.atan2(dx,dz)+Math.PI/2;
+  const n=findNearest(a.x,a.z,TS*1.6,e=>!e.dead&&e.k==='b'&&B[e.t].thin&&e.o===S.me);
+  return n?ang4(n):0;
+}
 function placeWallRun(a,b){
   const pts=wallLine(a,b), p=S.players[S.me];
   const cost=B[ghostType].cost;
+  const rot=runAngle(pts,a,b);
   let placed=0;
   for(const q of pts){
     if(!canAfford(p,cost))break;
     if(!placeOK(ghostType,q.x,q.z))continue;
-    NET.sendCmd({c:'place',b:ghostType,x:q.x,z:q.z,
+    NET.sendCmd({c:'place',b:ghostType,x:q.x,z:q.z,rot:Math.round(rot*1000)/1000,
       ids:[...SELN].filter(i=>{const e=S.byId.get(i);return e&&e.t==='vill'&&e.o===S.me;})});
     placed++;
   }
@@ -2853,7 +2874,7 @@ function showWallGhost(a,b){
   if(!ghostType||!B[ghostType].thin)return;
   const pts=wallLine(a,b);
   WALLPTS=pts.map(q=>({x:q.x,z:q.z,ok:placeOK(ghostType,q.x,q.z)}));
-  const ang=Math.abs(b.x-a.x)>=Math.abs(b.z-a.z)?0:Math.PI/2;
+  const ang=runAngle(pts,a,b);
   for(const q of WALLPTS){
     // a solid bright block plus a base plate: at phone zoom a faint ghost
     // simply disappears against the terrain
