@@ -592,8 +592,10 @@ function del(e){e.dead=1;}
 
 function newUnit(t,o,x,z,age){
   const st=unitStat(t,age===undefined?S.players[o].age:age);
-  return add({k:'u',t,o,x,z,hp:st.hp,mhp:st.hp,st,ord:null,cd:0,ang:rr(0,TAU),
+  const u=add({k:'u',t,o,x,z,hp:st.hp,mhp:st.hp,st,ord:null,cd:0,ang:rr(0,TAU),
     vx:0,vz:0,px:x,pz:z,carry:0,cres:null,fld:null,gx:-1,gz:-1,agr:1,stuck:0,tier:st});
+  if(!walkable(w2t(x),w2t(z)))shoveOut(u);   // never appear inside a wall
+  return u;
 }
 function newBuild(t,o,x,z,done,rot){
   const d=B[t];
@@ -621,6 +623,22 @@ function contact(e){
   if(B[e.t].walk)return e.r+0.55;
   const hw=(btiles(e.r)+0.5)*TS;
   return hw*1.42+0.5; // circumscribed: reachable from any approach angle
+}
+/* Last resort for a unit pinned on a corner: step it to a neighbouring tile
+   that is both walkable and closer to where it is trying to go. */
+function unstick(u){
+  shoveOut(u);
+  if(!u.fld)return;
+  const cx=w2t(u.x), cz=w2t(u.z);
+  const here=u.fld.dist[cz*NT+cx];
+  let best=null,bd=here;
+  for(let i=0;i<8;i++){
+    const x=cx+NB[i*2], z=cz+NB[i*2+1];
+    if(!walkable(x,z))continue;
+    const dd=u.fld.dist[z*NT+x];
+    if(dd<bd){bd=dd;best={x,z};}
+  }
+  if(best){u.x=t2w(best.x);u.z=t2w(best.z);u.fld=null;u.gx=-1;}
 }
 /* nudge a unit to the nearest tile it can actually stand on */
 function shoveOut(e){
@@ -817,16 +835,32 @@ function placeOK(t,x,z){
 }
 /* ================================================================== tick == */
 const _d={x:0,z:0};
+/* Is the straight line between two points clear of buildings? Steering directly
+   at a target that sits behind a wall is what pins units against corners. */
+function losClear(x1,z1,x2,z2){
+  const dx=x2-x1, dz=z2-z1, d=Math.hypot(dx,dz);
+  const n=Math.ceil(d/(TS*0.5));
+  for(let i=1;i<n;i++){
+    const t=i/n;
+    if(!walkable(w2t(x1+dx*t),w2t(z1+dz*t)))return false;
+  }
+  return true;
+}
 function moveTo(u,tx,tz,arrive,dt){
   const dx=tx-u.x, dz=tz-u.z, d=Math.hypot(dx,dz);
   // the second clause is a safety net: a unit wedged on a corner still counts as arrived
   if(d<=arrive||(u.stuck>15&&d<=arrive+2.4)){u.vx*=0.6;u.vz*=0.6;u.stuck=0;return true;}
   let dirx,dirz;
-  if(d<TS*1.3){dirx=dx/d;dirz=dz/d;}
+  // steer straight only when nothing is in the way; otherwise use the field
+  if(d<TS*1.3&&losClear(u.x,u.z,tx,tz)){dirx=dx/d;dirz=dz/d;}
   else{
     setGoal(u,tx,tz);
     const cx=w2t(u.x),cz=w2t(u.z);
     if(u.fld&&u.fld.dist[cz*NT+cx]===65535){
+      // Standing inside a footprint makes our own tile unreachable, which used
+      // to be read as "no route exists" and cancelled the order for good. Step
+      // out first; only give up if we are on open ground and still stranded.
+      if(!walkable(cx,cz)){shoveOut(u);u.noPath=0;u.fld=null;u.gx=-1;return false;}
       u.noPath=(u.noPath||0)+1;
       if(u.noPath>6){u.noPath=0;u.ord=null;u.fld=null;u.gx=-1;return false;}
     }else u.noPath=0;
@@ -838,6 +872,7 @@ function moveTo(u,tx,tz,arrive,dt){
   }
   // separation
   let sx=0,sz=0;
+  const sepK=u.push?0.35:1.5;      // a stuck unit pushes through instead of yielding
   near(u.x,u.z,1.6,o=>{
     // only other units push back; trees and rocks never blocked movement anyway,
     // and they dominate the entity count
@@ -846,7 +881,7 @@ function moveTo(u,tx,tz,arrive,dt){
     const rr2=(rad(u)+rad(o))**2;
     if(l2<rr2&&l2>1e-5){const l=Math.sqrt(l2);sx+=ox/l*(1-l/Math.sqrt(rr2));sz+=oz/l*(1-l/Math.sqrt(rr2));}
   });
-  dirx+=sx*1.5; dirz+=sz*1.5;
+  dirx+=sx*sepK; dirz+=sz*sepK;
   const dl=Math.hypot(dirx,dirz)||1; dirx/=dl; dirz/=dl;
   const sp=u.st.spd*(1-clamp(tileSlope(w2t(u.x),w2t(u.z))*0.14,0,0.4));
   let nx=u.x+dirx*sp*dt, nz=u.z+dirz*sp*dt;
@@ -855,11 +890,12 @@ function moveTo(u,tx,tz,arrive,dt){
     if(!walkable(w2t(nx),w2t(u.z)))nx=u.x;
     if(!walkable(w2t(u.x),w2t(nz)))nz=u.z;
   }
-  if(nx===u.x&&nz===u.z){
+  if(Math.abs(nx-u.x)+Math.abs(nz-u.z)<sp*dt*0.25){
     u.stuck++;
-    if(u.stuck===25){u.fld=null;u.gx=-1;}
-    if(u.stuck>50){u.stuck=0;shoveOut(u);}
-  } else u.stuck=0;
+    if(u.stuck===18){u.fld=null;u.gx=-1;}          // ask for a fresh route
+    if(u.stuck===36){u.push=1;}                     // stop yielding to crowds
+    if(u.stuck>54){u.stuck=0;u.push=0;unstick(u);}  // step around the obstacle
+  } else {u.stuck=0;u.push=0;}
   u.vx=(nx-u.x)/dt;u.vz=(nz-u.z)/dt;u.x=nx;u.z=nz;
   if(Math.abs(u.vx)+Math.abs(u.vz)>0.05)u.ang=Math.atan2(u.vx,u.vz);
   return false;
@@ -2460,15 +2496,30 @@ function drawWorld(alpha){
 }
 
 /* ---- camera ---- */
+/* Screen-space basis in world terms. The camera used to sit on the -z side
+   looking toward +z, which put world +x on the LEFT and +z UP — a 180° flip
+   from the minimap. Everything now derives from these two vectors, so the view
+   and the controls cannot disagree.
+     camRight = the world direction that appears to the right on screen
+     camUp    = the world direction that appears up the screen (away from you) */
+function camRight(){return {x:Math.cos(CAMS.yaw), z:-Math.sin(CAMS.yaw)};}
+function camUp(){return {x:-Math.sin(CAMS.yaw), z:-Math.cos(CAMS.yaw)};}
+/* move the view by a screen-space amount: ax right, ay up */
+function panScreen(ax,ay){
+  const r=camRight(), u=camUp();
+  CAMS.tx+=r.x*ax+u.x*ay;
+  CAMS.tz+=r.z*ax+u.z*ay;
+}
 function centerOn(x,z){CAMS.tx=x;CAMS.tz=z;}
 function updateCam(){
   if(renderer.xr.isPresenting)return;
   CAMS.dist=lerp(CAMS.dist,CAMS.tdist,0.2);
   CAMS.tx=clamp(CAMS.tx,-WORLD/2,WORLD/2);CAMS.tz=clamp(CAMS.tz,-WORLD/2,WORLD/2);
   const gy=groundY(CAMS.tx,CAMS.tz);
-  const d=CAMS.dist, ph=CAMS.pitch;
-  cam.position.set(CAMS.tx-Math.sin(CAMS.yaw)*Math.cos(ph)*d, gy+Math.sin(ph)*d,
-                   CAMS.tz-Math.cos(CAMS.yaw)*Math.cos(ph)*d);
+  const d=CAMS.dist, ph=CAMS.pitch, u=camUp();
+  // the camera sits opposite screen-up, so +z reads DOWN the screen like the minimap
+  cam.position.set(CAMS.tx-u.x*Math.cos(ph)*d, gy+Math.sin(ph)*d,
+                   CAMS.tz-u.z*Math.cos(ph)*d);
   cam.lookAt(CAMS.tx,gy+1.5,CAMS.tz);
   sun.position.set(CAMS.tx+50,110,CAMS.tz+30); sun.target.position.set(CAMS.tx,gy,CAMS.tz);
   sun.target.updateMatrixWorld();
@@ -2947,9 +2998,7 @@ canvas.addEventListener('pointermove',e=>{
     const p=ptFromEv(e); PCK.mx=p.x; PCK.my=p.y;
     if(PCK.pan){
       const k=CAMS.dist*0.0022;
-      const dx=-(p.x-PCK.pan.x)*k, dy=(p.y-PCK.pan.y)*k;
-      CAMS.tx-=Math.cos(CAMS.yaw)*dx-Math.sin(CAMS.yaw)*dy;
-      CAMS.tz+=Math.sin(CAMS.yaw)*dx+Math.cos(CAMS.yaw)*dy;
+      panScreen(-(p.x-PCK.pan.x)*k,(p.y-PCK.pan.y)*k);
       PCK.pan={x:p.x,y:p.y}; return;
     }
     if(ghostType)moveGhost(p.x,p.y);
@@ -2986,10 +3035,8 @@ canvas.addEventListener('pointermove',e=>{
     let da=ang-P.ang; if(da>Math.PI)da-=TAU; if(da<-Math.PI)da+=TAU;
     CAMS.yaw+=da;
     const k=CAMS.dist*0.0022;
-    // horizontal is inverted on purpose: dragging left pulls the map right
-    const dx=-(mx-P.lx)*k, dy=(my-P.ly)*k;
-    CAMS.tx-= Math.cos(CAMS.yaw)*dx - Math.sin(CAMS.yaw)*dy;
-    CAMS.tz+= Math.sin(CAMS.yaw)*dx + Math.cos(CAMS.yaw)*dy;
+    // the world follows your fingers: drag right, the map goes right
+    panScreen(-(mx-P.lx)*k, (my-P.ly)*k);
     P.pinch=d;P.ang=ang;P.lx=mx;P.ly=my;
   }
 },{passive:false});
@@ -3105,9 +3152,7 @@ function pcCamera(sec){
   }
   if(!ax&&!az)return;
   const sp=CAMS.dist*1.5*sec, l=Math.hypot(ax,az)||1;
-  ax=ax/l*sp; az=az/l*sp;
-  CAMS.tx+=Math.cos(CAMS.yaw)*ax+Math.sin(CAMS.yaw)*az;
-  CAMS.tz+=-Math.sin(CAMS.yaw)*ax+Math.cos(CAMS.yaw)*az;
+  panScreen(ax/l*sp, -az/l*sp);   // az is measured downward
 }
 
 function selectAllArmy(){
@@ -3579,8 +3624,7 @@ function padPoll(sec){
   const lx=padAxis(ax[0]||0), ly=padAxis(ax[1]||0);
   if(lx||ly){
     const sp=CAMS.dist*1.6*sec;
-    CAMS.tx+=(Math.cos(CAMS.yaw)*lx+Math.sin(CAMS.yaw)*ly)*sp;
-    CAMS.tz+=(-Math.sin(CAMS.yaw)*lx+Math.cos(CAMS.yaw)*ly)*sp;
+    panScreen(lx*sp, -ly*sp);      // stick y is measured downward
   }
   // right stick moves the cursor; shoulders rotate; triggers zoom
   const rx=padAxis(ax[2]||0), ry=padAxis(ax[3]||0);
