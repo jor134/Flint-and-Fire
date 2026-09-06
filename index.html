@@ -2104,73 +2104,121 @@ const TH=THREE;
 function ug(g,x,y,z,rx,rz){ if(rx)g.rotateX(rx); if(rz)g.rotateZ(rz); g.translate(x,y||0,z||0); return g; }
 
 /* each entry: [geometry, colour, tintedWithOwnerColour] */
+/* Five parts per unit, and deliberately different silhouettes: at phone zoom a
+   villager and a spearman must be told apart by shape and height alone, not by
+   the detail on them. Heights: vill 0.85, inf 1.05, rng 0.95, cav 1.45, sie 1.2 */
 const UGEO={
  vill:[
-  e=>[[ug(new TH.ConeGeometry(0.32,0.70,5),0,0.35),0,1],                       // fur skirt
-      [ug(new TH.IcosahedronGeometry(0.19,0),0,0.82),0x6B563A,0],              // wild hair
-      [ug(new TH.CylinderGeometry(0.05,0.10,0.50,4),0.26,0.50,0.05,0,0.7),0x8A7048,0]],
-  e=>[[ug(new TH.CylinderGeometry(0.18,0.26,0.76,6),0,0.38),0,1],
-      [ug(new TH.SphereGeometry(0.16,6,5),0,0.85),0xE8C9A0,0],
-      [ug(new TH.BoxGeometry(0.22,0.26,0.14),0.23,0.50),0xB08A54,0]],          // satchel
-  e=>[[ug(new TH.CylinderGeometry(0.19,0.29,0.78,6),0,0.39),0,1],
-      [ug(new TH.ConeGeometry(0.20,0.30,6),0,0.92),0x8A7A62,0],                // hood
-      [ug(new TH.CylinderGeometry(0.04,0.04,0.70,4),0.24,0.55,0,0,0.25),0x6B563A,0]],
-  e=>[[ug(new TH.CylinderGeometry(0.20,0.30,0.80,6),0,0.40),0,1],
-      [ug(new TH.SphereGeometry(0.16,6,5),0,0.90),0xE8C9A0,0],
-      [ug(new TH.BoxGeometry(0.30,0.44,0.10),0,0.55,0.16),0,1]]],              // tabard
+  e=>[[ug(new TH.ConeGeometry(0.30,0.62,5),0,0.31),0,1],                        // fur skirt
+      [ug(new TH.IcosahedronGeometry(0.18,0),0,0.74),0x6B563A,0],               // wild hair
+      [ug(new TH.CylinderGeometry(0.05,0.09,0.46,4),0.24,0.46,0.04,0,0.7),0x8A7048,0], // digging stick
+      [ug(new TH.SphereGeometry(0.09,5,4),-0.20,0.50,0.10),0xB08A54,0],         // bundle
+      [ug(new TH.BoxGeometry(0.26,0.07,0.16),0,0.66),0x5E4A32,0]],              // shoulders
+  e=>[[ug(new TH.CylinderGeometry(0.17,0.25,0.66,6),0,0.33),0,1],
+      [ug(new TH.SphereGeometry(0.155,6,5),0,0.76),0xE8C9A0,0],
+      [ug(new TH.BoxGeometry(0.20,0.24,0.13),0.21,0.44),0xB08A54,0],            // satchel
+      [ug(new TH.CylinderGeometry(0.035,0.035,0.52,4),-0.22,0.48,0,0,0.2),0x8A7048,0],
+      [ug(new TH.BoxGeometry(0.30,0.08,0.17),0,0.64),0xC4B08A,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.18,0.27,0.68,6),0,0.34),0,1],
+      [ug(new TH.ConeGeometry(0.19,0.28,6),0,0.82),0x8A7A62,0],                 // hood
+      [ug(new TH.CylinderGeometry(0.035,0.035,0.62,4),0.22,0.50,0,0,0.25),0x6B563A,0],
+      [ug(new TH.BoxGeometry(0.18,0.20,0.12),-0.20,0.42),0x6B563A,0],
+      [ug(new TH.BoxGeometry(0.32,0.08,0.18),0,0.66),0x9A968C,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.19,0.28,0.70,6),0,0.35),0,1],
+      [ug(new TH.SphereGeometry(0.155,6,5),0,0.84),0xE8C9A0,0],
+      [ug(new TH.BoxGeometry(0.26,0.40,0.09),0,0.50,0.15),0,1],                 // tabard
+      [ug(new TH.CylinderGeometry(0.035,0.035,0.58,4),0.22,0.50,0,0,0.2),0x6B563A,0],
+      [ug(new TH.BoxGeometry(0.34,0.09,0.19),0,0.68),0xD8A24A,0]]],
  inf:[
-  e=>[[ug(new TH.ConeGeometry(0.32,0.80,5),0,0.40),0,1],
-      [ug(new TH.IcosahedronGeometry(0.21,0),0,0.92),0x5E4A32,0],
-      [ug(new TH.CylinderGeometry(0.08,0.15,0.68,5),0.30,0.62,0,0,0.55),0x7A6244,0]], // club
-  e=>[[ug(new TH.CylinderGeometry(0.25,0.29,0.84,6),0,0.42),0,1],
-      [ug(new TH.ConeGeometry(0.24,0.34,6),0,1.02),0xC0A860,0],                // crested helm
-      [ug(new TH.CylinderGeometry(0.28,0.28,0.06,10),0.30,0.60,0,Math.PI/2),0,1]], // round shield
-  e=>[[ug(new TH.BoxGeometry(0.42,0.82,0.30),0,0.41),0,1],
-      [ug(new TH.ConeGeometry(0.22,0.36,5),0,1.00),0x9A968C,0],
-      [ug(new TH.BoxGeometry(0.30,0.46,0.06),0.30,0.60),0,1]],                 // kite shield
-  e=>[[ug(new TH.CylinderGeometry(0.28,0.32,0.90,7),0,0.45),0,1],
-      [ug(new TH.ConeGeometry(0.24,0.40,7),0,1.10),0xD8A24A,0],
-      [ug(new TH.BoxGeometry(0.08,0.95,0.16),0.30,0.75),0xE0DACB,0]]],         // greatsword
+  e=>[[ug(new TH.BoxGeometry(0.46,0.72,0.34),0,0.40),0,1],                      // broad torso
+      [ug(new TH.IcosahedronGeometry(0.20,0),0,0.90),0x5E4A32,0],
+      [ug(new TH.CylinderGeometry(0.09,0.16,0.70,5),0.34,0.60,0,0,0.5),0x7A6244,0], // club
+      [ug(new TH.BoxGeometry(0.62,0.13,0.22),0,0.76),0,1],                      // wide shoulders
+      [ug(new TH.CylinderGeometry(0.24,0.24,0.07,7),-0.34,0.52,0,0,Math.PI/2),0x8A7048,0]], // hide shield
+  e=>[[ug(new TH.BoxGeometry(0.44,0.76,0.32),0,0.42),0,1],
+      [ug(new TH.ConeGeometry(0.22,0.30,6),0,0.96),0xC0A860,0],
+      [ug(new TH.CylinderGeometry(0.035,0.035,1.05,4),0.30,0.70,0,0,0.12),0xC4B08A,0], // spear
+      [ug(new TH.BoxGeometry(0.60,0.14,0.22),0,0.80),0,1],
+      [ug(new TH.CylinderGeometry(0.28,0.28,0.07,10),-0.32,0.54,0,0,Math.PI/2),0,1]], // round shield
+  e=>[[ug(new TH.BoxGeometry(0.48,0.80,0.36),0,0.44),0,1],
+      [ug(new TH.ConeGeometry(0.21,0.34,5),0,1.00),0x9A968C,0],
+      [ug(new TH.BoxGeometry(0.07,0.78,0.13),0.30,0.72),0xE0DACB,0],            // sword
+      [ug(new TH.BoxGeometry(0.64,0.15,0.24),0,0.84),0x6B563A,0],
+      [ug(new TH.BoxGeometry(0.28,0.44,0.06),-0.32,0.54),0,1]],                 // kite shield
+  e=>[[ug(new TH.BoxGeometry(0.52,0.84,0.38),0,0.46),0,1],
+      [ug(new TH.ConeGeometry(0.23,0.38,7),0,1.06),0xD8A24A,0],
+      [ug(new TH.BoxGeometry(0.08,0.98,0.15),0.32,0.80),0xE0DACB,0],            // greatsword
+      [ug(new TH.BoxGeometry(0.70,0.17,0.26),0,0.88),0xD8A24A,0],
+      [ug(new TH.ConeGeometry(0.09,0.26,5),0,1.30),0xE0552B,0]]],               // plume
  rng:[
-  e=>[[ug(new TH.CylinderGeometry(0.16,0.24,0.74,5),0,0.37),0,1],
-      [ug(new TH.IcosahedronGeometry(0.17,0),0,0.85),0x5E4A32,0],
-      [ug(new TH.TorusGeometry(0.16,0.025,4,8),0.26,0.62,0,Math.PI/2),0x8A7048,0]], // sling
-  e=>[[ug(new TH.CylinderGeometry(0.16,0.24,0.76,5),0,0.38),0,1],
-      [ug(new TH.SphereGeometry(0.16,6,5),0,0.85),0xE8C9A0,0],
-      [ug(new TH.TorusGeometry(0.30,0.03,4,8,Math.PI),0.24,0.60,0,0,Math.PI/2),0x7A5A34,0]], // bow
-  e=>[[ug(new TH.CylinderGeometry(0.17,0.26,0.78,5),0,0.39),0,1],
-      [ug(new TH.ConeGeometry(0.19,0.28,5),0,0.90),0x8A7A62,0],
-      [ug(new TH.BoxGeometry(0.56,0.05,0.06),0.10,0.62,0.18),0x6B563A,0]],     // crossbow
-  e=>[[ug(new TH.CylinderGeometry(0.18,0.27,0.80,6),0,0.40),0,1],
-      [ug(new TH.ConeGeometry(0.20,0.30,6),0,0.92),0xD8A24A,0],
-      [ug(new TH.BoxGeometry(0.34,0.62,0.07),-0.28,0.60),0,1]]],               // pavise
+  e=>[[ug(new TH.CylinderGeometry(0.13,0.20,0.72,5),0,0.36),0,1],               // slight build
+      [ug(new TH.IcosahedronGeometry(0.16,0),0,0.84),0x5E4A32,0],
+      [ug(new TH.TorusGeometry(0.15,0.022,4,8),0.26,0.60,0,Math.PI/2),0x8A7048,0], // sling
+      [ug(new TH.SphereGeometry(0.08,5,4),-0.19,0.44,0.10),0x9A968C,0],         // stone pouch
+      [ug(new TH.BoxGeometry(0.24,0.06,0.14),0,0.74),0x6B563A,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.13,0.20,0.74,5),0,0.37),0,1],
+      [ug(new TH.SphereGeometry(0.15,6,5),0,0.86),0xE8C9A0,0],
+      [ug(new TH.TorusGeometry(0.34,0.028,4,10,Math.PI*1.1),0.22,0.62,0,0,Math.PI/2),0x7A5A34,0], // bow
+      [ug(new TH.CylinderGeometry(0.06,0.06,0.34,5),-0.18,0.62,-0.10,0.35),0x6B563A,0], // quiver
+      [ug(new TH.BoxGeometry(0.26,0.07,0.15),0,0.76),0xC4B08A,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.14,0.21,0.76,5),0,0.38),0,1],
+      [ug(new TH.ConeGeometry(0.18,0.26,5),0,0.88),0x8A7A62,0],
+      [ug(new TH.BoxGeometry(0.52,0.05,0.06),0.10,0.62,0.16),0x6B563A,0],       // crossbow stock
+      [ug(new TH.BoxGeometry(0.06,0.05,0.34),0.10,0.62,0.16),0x9A968C,0],       // crossbow arms
+      [ug(new TH.CylinderGeometry(0.06,0.06,0.36,5),-0.18,0.64,-0.10,0.35),0x6B563A,0]],
+  e=>[[ug(new TH.CylinderGeometry(0.15,0.22,0.78,6),0,0.39),0,1],
+      [ug(new TH.ConeGeometry(0.19,0.28,6),0,0.90),0xD8A24A,0],
+      [ug(new TH.BoxGeometry(0.56,0.05,0.07),0.10,0.64,0.16),0x4A4438,0],
+      [ug(new TH.BoxGeometry(0.30,0.52,0.06),-0.28,0.52),0,1],                  // pavise
+      [ug(new TH.CylinderGeometry(0.06,0.06,0.38,5),-0.16,0.66,-0.10,0.35),0x6B563A,0]]],
  cav:[
-  e=>[[ug(new TH.BoxGeometry(1.00,0.50,0.46),0,0.62),0x6B563A,0],              // shaggy beast
-      [ug(new TH.CylinderGeometry(0.20,0.24,0.60,5),-0.05,1.08),0,1],
-      [ug(new TH.TorusGeometry(0.30,0.05,4,8,2.2),0.55,0.72,0,Math.PI/2,0.6),0xE8DCC4,0]], // tusk
-  e=>[[ug(new TH.BoxGeometry(1.00,0.42,0.40),0,0.62),0x8A6B44,0],
-      [ug(new TH.CylinderGeometry(0.19,0.23,0.58,5),-0.05,1.05),0,1],
-      [ug(new TH.ConeGeometry(0.16,0.34,5),-0.05,1.42),0xC0A860,0]],
-  e=>[[ug(new TH.BoxGeometry(1.05,0.48,0.44),0,0.63),0,1],                     // barding
-      [ug(new TH.CylinderGeometry(0.20,0.24,0.60,6),-0.05,1.08),0x9A968C,0],
-      [ug(new TH.BoxGeometry(0.06,0.06,1.10),0.20,0.95,0.30),0x6B563A,0]],     // lance
-  e=>[[ug(new TH.BoxGeometry(1.10,0.50,0.46),0,0.65),0,1],
-      [ug(new TH.CylinderGeometry(0.21,0.25,0.62,6),-0.05,1.10),0xCFC6B2,0],
-      [ug(new TH.BoxGeometry(0.06,0.06,1.25),0.20,1.00,0.34),0xD8A24A,0]]],
+  e=>[[ug(new TH.BoxGeometry(1.02,0.50,0.46),0,0.60),0x6B563A,0],               // shaggy beast
+      [ug(new TH.CylinderGeometry(0.19,0.23,0.56,5),-0.06,1.04),0,1],           // rider
+      [ug(new TH.TorusGeometry(0.28,0.05,4,8,2.2),0.56,0.70,0,Math.PI/2,0.6),0xE8DCC4,0], // tusk
+      [ug(new TH.IcosahedronGeometry(0.16,0),-0.06,1.38),0x5E4A32,0],           // rider head
+      [ug(new TH.BoxGeometry(0.16,0.34,0.50),-0.46,0.66),0x5E4A32,0]],          // haunch
+  e=>[[ug(new TH.BoxGeometry(1.02,0.42,0.40),0,0.60),0x8A6B44,0],
+      [ug(new TH.CylinderGeometry(0.18,0.22,0.54,5),-0.06,1.02),0,1],
+      [ug(new TH.ConeGeometry(0.15,0.30,5),-0.06,1.40),0xC0A860,0],
+      [ug(new TH.BoxGeometry(0.22,0.26,0.34),0.50,0.70),0x8A6B44,0],            // head of the mount
+      [ug(new TH.BoxGeometry(0.05,0.05,0.86),0.22,0.92,0.26),0xC4B08A,0]],      // lance
+  e=>[[ug(new TH.BoxGeometry(1.06,0.48,0.44),0,0.61),0,1],                      // barding
+      [ug(new TH.CylinderGeometry(0.19,0.23,0.56,6),-0.06,1.04),0x9A968C,0],
+      [ug(new TH.BoxGeometry(0.055,0.055,1.10),0.22,0.94,0.30),0x6B563A,0],     // lance
+      [ug(new TH.ConeGeometry(0.15,0.28,6),-0.06,1.40),0x9A968C,0],
+      [ug(new TH.BoxGeometry(0.24,0.28,0.36),0.52,0.72),0,1]],
+  e=>[[ug(new TH.BoxGeometry(1.10,0.50,0.46),0,0.63),0,1],
+      [ug(new TH.CylinderGeometry(0.20,0.24,0.58,6),-0.06,1.06),0xCFC6B2,0],
+      [ug(new TH.BoxGeometry(0.06,0.06,1.24),0.22,0.98,0.34),0xD8A24A,0],
+      [ug(new TH.ConeGeometry(0.16,0.32,6),-0.06,1.44),0xD8A24A,0],
+      [ug(new TH.BoxGeometry(0.26,0.30,0.38),0.54,0.74),0,1]]],
  sie:[
-  e=>[[ug(new TH.BoxGeometry(1.25,0.50,0.95),0,0.40),0x6E5636,0],
-      [ug(new TH.CylinderGeometry(0.10,0.10,1.40,5),0,0.85,0.15,Math.PI/2),0,1],
-      [ug(new TH.CylinderGeometry(0.09,0.09,0.90,5),0,0.75,-0.30,0,Math.PI/2),0x4A3B28,0]],
-  e=>[[ug(new TH.BoxGeometry(1.25,0.50,0.95),0,0.40),0x6E5636,0],
-      [ug(new TH.CylinderGeometry(0.10,0.10,1.40,5),0,0.85,0.15,Math.PI/2),0,1],
-      [ug(new TH.CylinderGeometry(0.09,0.09,0.90,5),0,0.75,-0.30,0,Math.PI/2),0x4A3B28,0]],
-  e=>[[ug(new TH.BoxGeometry(1.30,0.50,1.00),0,0.40),0x5E4A32,0],
-      [ug(new TH.BoxGeometry(0.12,0.12,1.30),0,0.85,-0.10,-0.7),0,1],          // throwing arm
-      [ug(new TH.SphereGeometry(0.22,6,5),0,1.25,-0.45),0x9A968C,0]],
-  e=>[[ug(new TH.BoxGeometry(1.35,0.50,1.05),0,0.40),0x4A4438,0],
-      [ug(new TH.CylinderGeometry(0.10,0.10,1.90,5),0,1.00,0,0.9),0x5E4A32,0], // frame
-      [ug(new TH.BoxGeometry(0.10,0.10,2.00),0,1.30,-0.10,-1.1),0,1]]],        // beam
+  e=>[[ug(new TH.BoxGeometry(1.20,0.44,0.90),0,0.36),0x6E5636,0],               // low and wide
+      [ug(new TH.CylinderGeometry(0.10,0.10,1.32,5),0,0.74,0.14,Math.PI/2),0,1], // ram beam
+      [ug(new TH.CylinderGeometry(0.22,0.22,0.10,8),0.52,0.22,0.40,0,Math.PI/2),0x4A3B28,0],
+      [ug(new TH.CylinderGeometry(0.22,0.22,0.10,8),-0.52,0.22,0.40,0,Math.PI/2),0x4A3B28,0],
+      [ug(new TH.BoxGeometry(0.90,0.34,0.10),0,0.62,-0.40),0x5E4A32,0]],        // frame
+  e=>[[ug(new TH.BoxGeometry(1.22,0.44,0.92),0,0.36),0x6E5636,0],
+      [ug(new TH.CylinderGeometry(0.09,0.09,1.34,5),0,0.76,0.14,Math.PI/2),0,1],
+      [ug(new TH.BoxGeometry(0.70,0.08,0.08),0,0.80,-0.10),0xC4B08A,0],         // ballista arms
+      [ug(new TH.CylinderGeometry(0.22,0.22,0.10,8),0.54,0.22,0.40,0,Math.PI/2),0x4A3B28,0],
+      [ug(new TH.CylinderGeometry(0.22,0.22,0.10,8),-0.54,0.22,0.40,0,Math.PI/2),0x4A3B28,0]],
+  e=>[[ug(new TH.BoxGeometry(1.26,0.46,0.96),0,0.37),0x5E4A32,0],
+      [ug(new TH.BoxGeometry(0.11,0.11,1.20),0,0.80,-0.08,-0.7),0,1],           // throwing arm
+      [ug(new TH.SphereGeometry(0.20,6,5),0,1.18,-0.42),0x9A968C,0],            // stone
+      [ug(new TH.CylinderGeometry(0.24,0.24,0.10,8),0.56,0.23,0.42,0,Math.PI/2),0x4A3B28,0],
+      [ug(new TH.CylinderGeometry(0.24,0.24,0.10,8),-0.56,0.23,0.42,0,Math.PI/2),0x4A3B28,0]],
+  e=>[[ug(new TH.BoxGeometry(1.30,0.46,1.00),0,0.37),0x4A4438,0],
+      [ug(new TH.CylinderGeometry(0.10,0.10,1.80,5),0,0.94,0,0.9),0x5E4A32,0],  // A-frame
+      [ug(new TH.BoxGeometry(0.10,0.10,1.90),0,1.20,-0.08,-1.1),0,1],           // beam
+      [ug(new TH.BoxGeometry(0.34,0.34,0.34),0,0.52,0.52),0x9A968C,0],          // counterweight
+      [ug(new TH.CylinderGeometry(0.26,0.26,0.10,8),0.58,0.25,0.44,0,Math.PI/2),0x4A3B28,0]]],
 };
+/* The base plate does more work than the model at a distance, so give each
+   class its own outline: round worker, square soldier, wedge archer,
+   long hexagon rider, big square engine. */
+const DISCG={vill:[0.46,16],inf:[0.52,4],rng:[0.50,3],cav:[0.60,6],sie:[0.74,4]};
+const DISCN={vill:'disc_v',inf:'disc_i',rng:'disc_r',cav:'disc_c',sie:'disc_s'};
 const UPOOL={};
 /* worst case is every player at POPMAX in the same unit line and era, all
    sharing one pool. Overflowing it makes units silently invisible. */
@@ -2195,11 +2243,14 @@ function buildPools(){
   pool('ring',new THREE.RingGeometry(0.5,0.66,14).rotateX(-Math.PI/2),0xffffff,POPMAX*2+40);
   /* a flat coloured disc under each unit — at tabletop and phone zoom this
      reads whose army it is far faster than the tint on the body does */
-  const disc=new THREE.CircleGeometry(0.52,12); disc.rotateX(-Math.PI/2);
-  const dm=pool('disc',disc,0xffffff,UPCAP);
-  dm.material.transparent=true; dm.material.opacity=0.92;
-  dm.material.polygonOffset=true; dm.material.polygonOffsetFactor=-2;
-  dm.material.polygonOffsetUnits=-2; dm.material.depthWrite=false;
+  for(const t in DISCG){
+    const g=new THREE.CircleGeometry(DISCG[t][0],DISCG[t][1]);
+    g.rotateX(-Math.PI/2);
+    const dm=pool(DISCN[t],g,0xffffff,UPCAP);
+    dm.material.transparent=true; dm.material.opacity=0.92;
+    dm.material.polygonOffset=true; dm.material.polygonOffsetFactor=-2;
+    dm.material.polygonOffsetUnits=-2; dm.material.depthWrite=false;
+  }
   pool('arrow',new THREE.BoxGeometry(0.09,0.09,0.7),0xF0E3C0,300);
   // resources
   pool('tr_t',new THREE.CylinderGeometry(0.14,0.2,1.1,5),0x5A4326,2400).geometry.translate(0,0.55,0);
@@ -2477,10 +2528,13 @@ function drawWorld(alpha){
     if(e.k==='u'){
       if(e.o===S.me)MYU.push(e);
       const c=PCOL[e.o], parts=unitPool(e.t,eraOf(e.o));
-      pushI('disc',e.rx,y+0.045,e.rz,0,e.t==='cav'||e.t==='sie'?1.35:1,c);
+      // the plate turns with the unit so a wedge or a long hexagon reads its facing
+      pushI(DISCN[e.t]||'disc_v',e.rx,y+0.045,e.rz,
+        (e.t==='rng'||e.t==='cav'||e.t==='sie')?e.ang:0,1,c);
       for(let i=0;i<parts.length;i++)
         pushI(parts[i],e.rx,y,e.rz,e.ang,1,IM[parts[i]].userData.tint?c:undefined);
-      if(sel.has(e.id))pushI('ring',e.rx,y+0.06,e.rz,0,1.1,0xF0D080);
+      if(sel.has(e.id))pushI('ring',e.rx,y+0.06,e.rz,0,
+        e.t==='sie'?1.6:e.t==='cav'?1.35:1.05,0xF0D080);
       else if(PSEL.size&&PSEL.has(e.id))pushI('ring',e.rx,y+0.05,e.rz,0,1.28,0x7FD4FF);
     }else if(e.k==='r'){
       if(e.t==='tree'){pushI('tr_t',e.x,y,e.z,e.id*0.7,1);pushI('tr_f',e.x,y,e.z,e.id*0.7,0.8+((e.id*37)%20)/60);}
