@@ -3398,7 +3398,7 @@ $('mSel').onclick=()=>{setGhost(null);SELN.clear();afterSelect();};
 $('mAll').onclick=()=>selectAllArmy();
 $('mIdle').onclick=()=>selectIdle();
 /* =================================================================== VR == */
-const VR={on:false,scale:0.0075,fx:0,fz:0,c:[],grip:[],grab:[null,null],
+const VR={COLS:4,ROWS:4,HEAD:0.19,on:false,scale:0.0075,fx:0,fz:0,c:[],grip:[],grab:[null,null],
   panel:null,ptex:null,pctx:null,hover:-1,cursor:null,drag:null,ray:new THREE.Raycaster()};
 function vrSetup(){
   for(let i=0;i<2;i++){
@@ -3415,9 +3415,9 @@ function vrSetup(){
     c.addEventListener('squeezeend',()=>vrGrab(i,0));
   }
   // wrist console on the left controller
-  const cv=document.createElement('canvas'); cv.width=480;cv.height=380;
+  const cv=document.createElement('canvas'); cv.width=640;cv.height=460;
   VR.pctx=cv.getContext('2d'); VR.ptex=new THREE.CanvasTexture(cv);
-  const pm=new THREE.Mesh(new THREE.PlaneGeometry(0.19,0.15),
+  const pm=new THREE.Mesh(new THREE.PlaneGeometry(0.24,0.17),
     new THREE.MeshBasicMaterial({map:VR.ptex,transparent:true}));
   pm.position.set(0.02,0.05,-0.07); pm.rotation.set(-1.0,0,0.25);
   VR.panel=pm; VR.c[0].add(pm);
@@ -3466,10 +3466,10 @@ function vrPanelHit(){
   const h=VR.ray.intersectObject(VR.panel,false);
   if(!h.length||!h[0].uv)return -1;
   const u=h[0].uv.x, v=1-h[0].uv.y;
-  if(v<0.24)return -1;
-  const col=Math.floor(u*3), row=Math.floor((v-0.24)/0.76*3);
-  const idx=row*3+col;
-  return idx>=0&&idx<Math.min(9,CMDBTNS.length)?idx:-1;
+  if(v<VR.HEAD)return -1;
+  const col=Math.floor(u*VR.COLS), row=Math.floor((v-VR.HEAD)/(1-VR.HEAD)*VR.ROWS);
+  const idx=row*VR.COLS+col;
+  return idx>=0&&idx<Math.min(VR.COLS*VR.ROWS,CMDBTNS.length)?idx:-1;
 }
 function vrSelect(i,down){
   if(!S.started)return;
@@ -3486,6 +3486,17 @@ function vrSelect(i,down){
     afterSelect(); return;
   }
   if(ghostType){
+    if(B[ghostType].thin){
+      // same two-step as touch: anchor, then run the wall out to the second point
+      if(!WALLA){WALLA={x:h.x,z:h.z};SFX.click();toast('Wall started — point at the far end');}
+      else{
+        const laid=placeWallRun(WALLA,h);
+        WALLA=null; clearWallGhost();
+        if(laid)setGhost(null);
+      }
+      vrDrawPanel();
+      return;
+    }
     if(placeOK(ghostType,h.x,h.z)){
       NET.sendCmd({c:'place',b:ghostType,x:h.x,z:h.z,
         ids:[...SELN].filter(q=>{const u=S.byId.get(q);return u&&u.t==='vill';})});
@@ -3504,7 +3515,8 @@ function vrSelect(i,down){
   }else if(ent){SELN.clear();SELN.add(ent.id);afterSelect();vrDrawPanel();}
 }
 function vrGrab(i,down){
-  if(!down){VR.grab[i]=null;return;}
+  if(!down){VR.grab[i]=null;VR.pinch=null;return;}
+  if(WALLA&&ghostType){WALLA=null;clearWallGhost();toast('Wall cancelled');}
   const c=VR.c[i]; const p=new THREE.Vector3().setFromMatrixPosition(c.matrixWorld);
   VR.grab[i]={p:p.clone(),wp:world.position.clone(),ws:world.scale.x,
     other:VR.grab[1-i]?new THREE.Vector3().setFromMatrixPosition(VR.c[1-i].matrixWorld):null};
@@ -3515,13 +3527,22 @@ function vrFrame(){
   if(g0&&g1){
     const p0=new THREE.Vector3().setFromMatrixPosition(VR.c[0].matrixWorld);
     const p1=new THREE.Vector3().setFromMatrixPosition(VR.c[1].matrixWorld);
-    const d0=g0.p.distanceTo(g1.p), d1=p0.distanceTo(p1);
-    if(d0>0.02){
-      const s=clamp(g0.ws*(d1/d0),0.0022,0.06);
-      const c=world.position.clone();
-      world.scale.setScalar(s); VR.scale=s;
+    const mid=p0.clone().add(p1).multiplyScalar(0.5);
+    const dist=p0.distanceTo(p1);
+    if(!VR.pinch){
+      VR.pinch={d0:Math.max(0.05,dist),s0:world.scale.x,
+                p0:world.position.clone(),m0:mid.clone()};
     }
+    const P=VR.pinch;
+    const s=clamp(P.s0*(dist/P.d0),0.0022,0.08);
+    /* Keep whatever was between your hands between your hands. Without this the
+       table scales about its own origin and slides out from under you. */
+    const off=P.m0.clone().sub(P.p0).multiplyScalar(s/P.s0);
+    world.scale.setScalar(s); VR.scale=s;
+    world.position.copy(mid).sub(off);
+    world.position.y=clamp(world.position.y,0.35,2.0);
   }else{
+    VR.pinch=null;
     for(let i=0;i<2;i++){
       const g=VR.grab[i]; if(!g)continue;
       const p=new THREE.Vector3().setFromMatrixPosition(VR.c[i].matrixWorld);
@@ -3533,7 +3554,14 @@ function vrFrame(){
   if(h&&VR.cursor){VR.cursor.visible=true;
     VR.cursor.position.set(h.x,groundY(h.x,h.z)+0.2,h.z);
     VR.cursor.scale.setScalar(VR.drag?Math.max(1,Math.hypot(h.x-VR.drag.x,h.z-VR.drag.z)/2):1.2);
-    if(ghostType)ghost&&ghost.position.set(h.x,groundY(h.x,h.z),h.z);
+    if(ghostType){
+      if(B[ghostType].thin){
+        const g={x:t2w(w2t(h.x)),z:t2w(w2t(h.z))};
+        if(WALLA)showWallGhost(WALLA,g); else clearWallGhost();
+        if(ghost)ghost.visible=!WALLA;
+        if(ghost&&!WALLA)ghost.position.set(g.x,groundY(g.x,g.z),g.z);
+      }else if(ghost)ghost.position.set(h.x,groundY(h.x,h.z),h.z);
+    }
   }else if(VR.cursor)VR.cursor.visible=false;
   const hv=vrPanelHit();
   if(hv!==VR.hover){VR.hover=hv;vrDrawPanel();}
@@ -3542,27 +3570,27 @@ function vrFrame(){
 function vrDrawPanel(){
   const x=VR.pctx; if(!x)return;
   const p=S.players[S.me]; if(!p)return;
-  x.clearRect(0,0,480,380);
-  x.fillStyle='#14110EF0'; x.fillRect(0,0,480,380);
-  x.strokeStyle='#5A4E40'; x.lineWidth=3; x.strokeRect(2,2,476,376);
+  x.clearRect(0,0,640,460);
+  x.fillStyle='#14110EF0'; x.fillRect(0,0,640,460);
+  x.strokeStyle='#5A4E40'; x.lineWidth=3; x.strokeRect(2,2,636,456);
   x.font='700 26px sans-serif'; x.textAlign='left';
   const rs=[['#E86A5C',Math.floor(p.r.f)],['#9BCB6A',Math.floor(p.r.w)],
             ['#D8A24A',Math.floor(p.r.g)],['#B9B2A6',Math.floor(p.r.s)]];
-  rs.forEach((r,i)=>{x.fillStyle=r[0];x.fillText(String(r[1]),12+i*104,38);});
+  rs.forEach((r,i)=>{x.fillStyle=r[0];x.fillText(String(r[1]),12+i*140,38);});
   x.fillStyle='#A99C85'; x.font='600 18px sans-serif';
   x.fillText(AGES[p.age].n+' Age   ·   '+p.pop+'/'+p.cap,12,68);
-  x.strokeStyle='#33291F'; x.beginPath();x.moveTo(0,86);x.lineTo(480,86);x.stroke();
-  const bw=160,bh=98;
-  CMDBTNS.slice(0,9).forEach((b,i)=>{
-    const cx=(i%3)*bw, cy=86+Math.floor(i/3)*bh;
+  x.strokeStyle='#33291F'; x.beginPath();x.moveTo(0,86);x.lineTo(640,86);x.stroke();
+  const bw=640/VR.COLS, bh=(460-86)/VR.ROWS;
+  CMDBTNS.slice(0,VR.COLS*VR.ROWS).forEach((b,i)=>{
+    const cx=(i%VR.COLS)*bw, cy=86+Math.floor(i/VR.COLS)*bh;
     x.fillStyle=VR.hover===i?'#D8A24A':(b.off?'#221D18':'#2C2620');
     x.fillRect(cx+3,cy+3,bw-6,bh-6);
     x.fillStyle=VR.hover===i?'#231A0E':(b.off?'#6B6155':'#E6DAC4');
     x.font='700 15px sans-serif'; x.textAlign='center';
-    x.fillText(b.nm.slice(0,16),cx+bw/2,cy+42);
+    x.fillText(b.nm.slice(0,14),cx+bw/2,cy+bh*0.45);
     x.font='600 13px sans-serif'; x.fillStyle=VR.hover===i?'#4A3A18':'#8A7A62';
-    if(b.cost)x.fillText(b.cost,cx+bw/2,cy+66);
-    if(b.q){x.fillStyle='#D8A24A';x.fillText('x'+b.q,cx+bw-22,cy+22);}
+    if(b.cost)x.fillText(b.cost,cx+bw/2,cy+bh*0.72);
+    if(b.q){x.fillStyle='#D8A24A';x.fillText('x'+b.q,cx+bw-18,cy+20);}
     x.textAlign='left';
   });
   VR.ptex.needsUpdate=true;
